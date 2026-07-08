@@ -102,8 +102,6 @@ func (c *conn) Ping(_ context.Context) error {
 	defer c.release()
 
 	// Send SESSION_HAS_PENDING_TRANSACTION as a lightweight probe.
-	// This operation returns a boolean (true if there are uncommitted changes).
-	// We don't care about the value, only that the server responds.
 	if err := c.sess.tr.WriteInt32(SessionHasPendingTransaction); err != nil {
 		return driver.ErrBadConn
 	}
@@ -111,22 +109,28 @@ func (c *conn) Ping(_ context.Context) error {
 		return driver.ErrBadConn
 	}
 
-	// Read status.
+	// Read the response status.
 	status, err := c.sess.tr.ReadInt32()
 	if err != nil {
 		return driver.ErrBadConn
 	}
-	if status != StatusOK {
-		// Server returned an error or unexpected status.
-		// Read and discard the error details for now.
-		if status == StatusError {
-			_ = readH2Error(c.sess.tr)
-		}
+	switch status {
+	case StatusOK, StatusOKStateChanged:
+		// Both are success; StatusOKStateChanged merely signals that the
+		// server-side modification counter changed (e.g. a DDL committed
+		// elsewhere). No extra payload follows.
+	case StatusError:
+		_ = readH2Error(c.sess.tr) // drain error frame, best-effort
+		return driver.ErrBadConn
+	default:
 		return driver.ErrBadConn
 	}
 
-	// Read the boolean result (has pending transaction).
-	_, err = c.sess.tr.ReadBool()
+	// Read the pending-transaction result. The server sends writeInt (4 bytes),
+	// NOT writeBoolean (1 byte) — see TcpServerThread SESSION_HAS_PENDING_TRANSACTION.
+	// Using ReadBool here would leave 3 stale bytes in the read buffer and
+	// corrupt every subsequent read on this connection.
+	_, err = c.sess.tr.ReadInt32()
 	if err != nil {
 		return driver.ErrBadConn
 	}

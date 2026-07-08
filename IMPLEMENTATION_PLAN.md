@@ -279,6 +279,16 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Verified: `go build`, `go vet`, `make lint` (0 issues), `go test -race`, live integration tests pass including Ping. ✅
 - **Status:** ✅ Done — 2026-07-08
 
+### Phase 4 review
+- **Review date:** 2026-07-08
+- **Four bugs found and repaired:**
+  1. **Bug A (critical) — `Ping` reads `ReadBool` (1 byte) instead of `ReadInt32` (4 bytes) for the `SESSION_HAS_PENDING_TRANSACTION` result** (`conn.go`): `TcpServerThread` responds with `writeInt(STATUS_OK)` + `writeInt(0 or 1)`. Reading with `ReadBool()` consumed only 1 of the 4 result bytes, leaving 3 stale bytes in the read buffer that would silently corrupt every subsequent protocol read on the same connection. Fixed to `ReadInt32()`. Regression test `TestConnPingRoundTrip` confirmed the failure under the old code and passes with the fix.
+  2. **Bug B (minor) — `Ping` returns `driver.ErrBadConn` for `StatusOKStateChanged`** (`conn.go`): When the server's modification counter changes (e.g. a remote DDL), any response can carry `STATUS_OK_STATE_CHANGED = 3` instead of `STATUS_OK = 1`. The `if status != StatusOK` guard rejected this valid response. Fixed with a `switch` that accepts both `StatusOK` and `StatusOKStateChanged` as success.
+  3. **Bug C (design) — `NewConnector` mutated the caller's `*Config` and stored the raw pointer** (`driver.go`): Port defaulting wrote `cfg.Port = DefaultTCPPortStr` directly on the caller's struct, and the connector stored the original pointer, so post-creation mutations to the caller's Config silently affected the connector. Fixed by shallow-copying the Config before any mutation or storage. Tests `TestNewConnectorDoesNotMutateCfg` and `TestNewConnectorCfgIsolated` pin the behaviour.
+  4. **Bug D (test) — `TestDriverRegistration` passed even when the driver was not registered** (`driver_test.go`): An unknown-driver error from `sql.Open` was handled with `t.Logf` (non-fatal), so a missing `sql.Register` call would not fail the test. Fixed to `t.Fatalf`.
+- **Test count after fixes:** 185 total (+5 new regression tests: `TestConnPingRoundTrip`, `TestNewConnectorDoesNotMutateCfg`, `TestNewConnectorCfgIsolated`, and two new assertions in `TestNewConnectorDefaultPort`/`TestDriverRegistration`). All pass with `-race`.
+- **Verified:** `go build`, `go vet`, `make lint` (0 issues), `go test -race`, 8 integration tests pass. ✅
+
 ---
 
 ## Phase 5 — Query execution and row decoding

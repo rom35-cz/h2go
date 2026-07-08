@@ -8,19 +8,13 @@ import (
 )
 
 func TestDriverRegistration(t *testing.T) {
-	// Verify the driver is registered under the name "h2".
-	d, err := sql.Open("h2", "h2://localhost:9092/test")
+	// sql.Open with a valid DSN must succeed — any error means the driver
+	// is not registered or DSN parsing is broken.
+	db, err := sql.Open("h2", "h2://localhost:9092/test")
 	if err != nil {
-		// This error comes from parsing, not registration itself.
-		// If registration failed, we'd get a different error.
-		t.Logf("sql.Open parse error (expected): %v", err)
+		t.Fatalf("sql.Open failed: %v (driver may not be registered under \"h2\")", err)
 	}
-	if d != nil {
-		_ = d.Close()
-	}
-
-	// Verify the driver type exists and can be instantiated.
-	_ = driver.Driver(&Driver{})
+	_ = db.Close()
 }
 
 func TestDriverOpenInvalidDSN(t *testing.T) {
@@ -164,6 +158,57 @@ func TestOpenDBNilConfig(t *testing.T) {
 	_, err := OpenDB(nil)
 	if err == nil {
 		t.Fatal("expected error for nil config")
+	}
+}
+
+// TestNewConnectorDoesNotMutateCfg verifies that NewConnector does not write
+// back into the caller's Config (Bug C: port defaulting must not mutate).
+func TestNewConnectorDoesNotMutateCfg(t *testing.T) {
+	cfg := &Config{
+		Host:     "localhost",
+		Port:     "", // intentionally empty
+		Database: "test",
+	}
+
+	_, err := NewConnector(cfg)
+	if err != nil {
+		t.Fatalf("NewConnector error: %v", err)
+	}
+
+	// The original Config must not be touched.
+	if cfg.Port != "" {
+		t.Errorf("NewConnector mutated cfg.Port: got %q, want empty string", cfg.Port)
+	}
+}
+
+// TestNewConnectorCfgIsolated verifies that post-creation mutations to the
+// caller's Config do not affect the connector's stored copy (Bug C).
+func TestNewConnectorCfgIsolated(t *testing.T) {
+	cfg := &Config{
+		Host:     "localhost",
+		Port:     "9092",
+		Database: "test",
+	}
+
+	connr, err := NewConnector(cfg)
+	if err != nil {
+		t.Fatalf("NewConnector error: %v", err)
+	}
+
+	// Mutate the original config after creation.
+	cfg.Host = "otherhost"
+	cfg.Port = "9999"
+
+	// The connector must not see the mutations.
+	c, ok := connr.(*connector)
+	if !ok {
+		t.Fatal("expected *connector")
+	}
+	if c.cfg.Host == "otherhost" {
+		t.Error("connector.cfg.Host reflects post-creation mutation (not isolated)")
+	}
+	if c.cfg.Port == "9999" {
+		t.Error("connector.cfg.Port reflects post-creation mutation (not isolated)")
 	}
 }
 

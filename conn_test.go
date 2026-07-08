@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"net"
 	"testing"
 )
 
@@ -200,5 +201,69 @@ func TestConnPingBusy(t *testing.T) {
 	// Should NOT be ErrBadConn (that's for closed connections).
 	if err == driver.ErrBadConn {
 		t.Error("expected non-ErrBadConn error for busy connection, got ErrBadConn")
+	}
+}
+
+// TestConnPingRoundTrip verifies the full Ping wire protocol against a mock
+// server and catches Bug A (ReadBool vs ReadInt32 mismatch).
+//
+// The mock server responds to each SESSION_HAS_PENDING_TRANSACTION with
+// STATUS_OK + int32(0) exactly as TcpServerThread does.  Two consecutive
+// Pings are issued: if stale bytes from the first Ping remain in the buffer,
+// the second Ping reads garbage status and fails with ErrBadConn.
+func TestConnPingRoundTrip(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer serverConn.Close()
+		tr := NewReadWriter(serverConn)
+
+		// Handle two consecutive Ping probes.
+		for i := range 2 {
+			op, err := tr.ReadInt32()
+			if err != nil {
+				return
+			}
+			if op != SessionHasPendingTransaction {
+				t.Errorf("ping %d: expected op %d (SESSION_HAS_PENDING_TRANSACTION), got %d",
+					i, SessionHasPendingTransaction, op)
+				return
+			}
+			// Respond exactly as TcpServerThread: writeInt(STATUS_OK) + writeInt(0).
+			// Using writeBoolean here instead of writeInt would be the bug we are testing.
+			if err := tr.WriteInt32(StatusOK); err != nil {
+				return
+			}
+			if err := tr.WriteInt32(0); err != nil {
+				return
+			}
+			if err := tr.Flush(); err != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		clientConn.Close()
+		<-done
+	})
+
+	c := &conn{
+		sess: &Session{
+			tr: NewReadWriter(clientConn),
+			id: "test-ping-wire",
+		},
+	}
+
+	// First Ping.
+	if err := c.Ping(context.Background()); err != nil {
+		t.Fatalf("first Ping failed: %v", err)
+	}
+
+	// Second Ping: if Bug A is present, 3 stale bytes remain from the first
+	// response and the status read returns garbage, causing ErrBadConn here.
+	if err := c.Ping(context.Background()); err != nil {
+		t.Fatalf("second Ping failed: %v — stale bytes likely left in buffer (Bug A)", err)
 	}
 }

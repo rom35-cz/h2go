@@ -52,6 +52,12 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 // which is not possible with sql.Open which only receives one DSN
 // string.
 //
+// NewConnector makes a shallow copy of cfg so that subsequent mutations
+// of the caller's struct do not affect the connector, and so that port
+// defaulting below does not surprise the caller. Note: the Params map
+// is shared (shallow copy); callers should not mutate cfg.Params after
+// creating the connector.
+//
 // Example:
 //
 //	cfg, err := h2go.ParseDSN("h2://localhost:9092/mydb")
@@ -67,14 +73,16 @@ func NewConnector(cfg *Config) (driver.Connector, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("h2go: NewConnector: config is nil")
 	}
-	// Validate required fields are present.
 	if cfg.Host == "" {
 		return nil, fmt.Errorf("h2go: NewConnector: host is required")
 	}
-	if cfg.Port == "" {
-		cfg.Port = DefaultTCPPortStr
+	// Shallow-copy so the connector's config is independent of the caller's
+	// struct. Port defaulting below does not mutate the caller's value.
+	cfgCopy := *cfg
+	if cfgCopy.Port == "" {
+		cfgCopy.Port = DefaultTCPPortStr
 	}
-	return &connector{cfg: cfg}, nil
+	return &connector{cfg: &cfgCopy}, nil
 }
 
 // OpenDB opens a *sql.DB handle using the provided Config.
