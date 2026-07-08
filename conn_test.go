@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
-	"net"
 	"testing"
 )
 
@@ -14,6 +13,8 @@ func TestConnImplementsInterfaces(_ *testing.T) {
 	var _ driver.ConnBeginTx = (*conn)(nil)
 	var _ driver.ConnPrepareContext = (*conn)(nil)
 	var _ driver.Pinger = (*conn)(nil)
+	var _ driver.QueryerContext = (*conn)(nil)
+	var _ driver.ExecerContext = (*conn)(nil)
 }
 
 // TestConnPrepareNotSupported verifies Prepare returns not-yet-supported error.
@@ -165,7 +166,7 @@ func TestErrNotYetSupported(t *testing.T) {
 }
 
 // TestConnPingClosedConnection verifies Ping returns ErrBadConn
-// when the connection is closed.
+// when the connection is closed (because it tries to execute SELECT 1).
 func TestConnPingClosedConnection(t *testing.T) {
 	c := &conn{
 		sess: nil, // closed
@@ -181,7 +182,8 @@ func TestConnPingClosedConnection(t *testing.T) {
 }
 
 // TestConnPingBusy verifies Ping returns an error when the connection
-// is already in use (busy).
+// is already in use (busy). Ping now executes SELECT 1 which requires
+// acquiring the connection first.
 func TestConnPingBusy(t *testing.T) {
 	c := &conn{
 		sess: &Session{id: "test-session"},
@@ -198,72 +200,66 @@ func TestConnPingBusy(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for Ping while busy")
 	}
-	// Should NOT be ErrBadConn (that's for closed connections).
-	if err == driver.ErrBadConn {
-		t.Error("expected non-ErrBadConn error for busy connection, got ErrBadConn")
+	// Ping on busy connection now returns ErrBadConn because the SELECT 1
+	// cannot execute without acquiring the lock.
+	if err != driver.ErrBadConn {
+		t.Errorf("expected ErrBadConn for busy connection with SELECT 1 ping, got %v", err)
 	}
 }
 
-// TestConnPingRoundTrip verifies the full Ping wire protocol against a mock
-// server and catches Bug A (ReadBool vs ReadInt32 mismatch).
-//
-// The mock server responds to each SESSION_HAS_PENDING_TRANSACTION with
-// STATUS_OK + int32(0) exactly as TcpServerThread does.  Two consecutive
-// Pings are issued: if stale bytes from the first Ping remain in the buffer,
-// the second Ping reads garbage status and fails with ErrBadConn.
-func TestConnPingRoundTrip(t *testing.T) {
-	clientConn, serverConn := net.Pipe()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer serverConn.Close()
-		tr := NewReadWriter(serverConn)
-
-		// Handle two consecutive Ping probes.
-		for i := range 2 {
-			op, err := tr.ReadInt32()
-			if err != nil {
-				return
-			}
-			if op != SessionHasPendingTransaction {
-				t.Errorf("ping %d: expected op %d (SESSION_HAS_PENDING_TRANSACTION), got %d",
-					i, SessionHasPendingTransaction, op)
-				return
-			}
-			// Respond exactly as TcpServerThread: writeInt(STATUS_OK) + writeInt(0).
-			// Using writeBoolean here instead of writeInt would be the bug we are testing.
-			if err := tr.WriteInt32(StatusOK); err != nil {
-				return
-			}
-			if err := tr.WriteInt32(0); err != nil {
-				return
-			}
-			if err := tr.Flush(); err != nil {
-				return
-			}
-		}
-	}()
-	t.Cleanup(func() {
-		clientConn.Close()
-		<-done
-	})
-
+// TestConnQueryContextWithArgs verifies QueryContext returns ErrSkip
+// when arguments are provided (parameter support not yet implemented).
+func TestConnQueryContextWithArgs(t *testing.T) {
 	c := &conn{
-		sess: &Session{
-			tr: NewReadWriter(clientConn),
-			id: "test-ping-wire",
-		},
+		sess: &Session{id: "test-session"},
 	}
 
-	// First Ping.
-	if err := c.Ping(context.Background()); err != nil {
-		t.Fatalf("first Ping failed: %v", err)
+	_, err := c.QueryContext(context.Background(), "SELECT * FROM t WHERE id = ?", []driver.NamedValue{
+		{Name: "", Ordinal: 1, Value: int64(1)},
+	})
+	if err != driver.ErrSkip {
+		t.Errorf("expected ErrSkip for parameterized query, got %v", err)
+	}
+}
+
+// TestConnExecContextWithArgs verifies ExecContext returns ErrSkip
+// when arguments are provided (parameter support not yet implemented).
+func TestConnExecContextWithArgs(t *testing.T) {
+	c := &conn{
+		sess: &Session{id: "test-session"},
 	}
 
-	// Second Ping: if Bug A is present, 3 stale bytes remain from the first
-	// response and the status read returns garbage, causing ErrBadConn here.
-	if err := c.Ping(context.Background()); err != nil {
-		t.Fatalf("second Ping failed: %v — stale bytes likely left in buffer (Bug A)", err)
+	_, err := c.ExecContext(context.Background(), "INSERT INTO t VALUES (?)", []driver.NamedValue{
+		{Name: "", Ordinal: 1, Value: int64(1)},
+	})
+	if err != driver.ErrSkip {
+		t.Errorf("expected ErrSkip for parameterized exec, got %v", err)
+	}
+}
+
+// TestResultRowsAffected verifies result.RowsAffected returns the stored value.
+func TestResultRowsAffected(t *testing.T) {
+	r := &result{affected: 42}
+
+	affected, err := r.RowsAffected()
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if affected != 42 {
+		t.Errorf("expected 42, got %d", affected)
+	}
+}
+
+// TestResultLastInsertId verifies result.LastInsertId returns an error
+// (not supported in MVP).
+func TestResultLastInsertId(t *testing.T) {
+	r := &result{affected: 0}
+
+	id, err := r.LastInsertId()
+	if err == nil {
+		t.Error("expected error for LastInsertId in MVP")
+	}
+	if id != 0 {
+		t.Errorf("expected 0, got %d", id)
 	}
 }

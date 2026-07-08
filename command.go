@@ -117,8 +117,13 @@ func (s *Session) PrepareCommand(ctx context.Context, sql string) (*PreparedComm
 	default:
 	}
 
-	// Read response
-	// Server sends: isQuery (boolean), readOnly (boolean), paramCount (int)
+	// Read response.
+	// Server: writeInt(status) . writeBoolean(isQuery) . writeBoolean(readOnly) . writeInt(paramCount)
+	// Check status first — if STATUS_ERROR the server follows with an H2Error payload.
+	if err := readStatus(s.tr); err != nil {
+		return nil, fmt.Errorf("h2go: PrepareCommand: %w", err)
+	}
+
 	isQuery, err := s.tr.ReadBool()
 	if err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommand: failed to read isQuery: %w", err)

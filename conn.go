@@ -89,52 +89,18 @@ func (c *conn) PrepareContext(_ context.Context, _ string) (driver.Stmt, error) 
 	return nil, fmt.Errorf("h2go: PrepareContext: %w (prepared statements coming in Phase 6)", ErrNotYetSupported)
 }
 
-// Ping validates the connection by performing a lightweight round-trip
-// to the server using SESSION_HAS_PENDING_TRANSACTION. This is an interim
-// implementation; in Phase 5 (T5.3) it will be re-pointed to execute
-// "SELECT 1" once query execution is available.
+// Ping validates the connection by executing SELECT 1 and draining
+// the result. This confirms the session is alive and can execute queries.
 //
 // Ping implements driver.Pinger.
-func (c *conn) Ping(_ context.Context) error {
-	if err := c.acquire(); err != nil {
-		return err
-	}
-	defer c.release()
-
-	// Send SESSION_HAS_PENDING_TRANSACTION as a lightweight probe.
-	if err := c.sess.tr.WriteInt32(SessionHasPendingTransaction); err != nil {
-		return driver.ErrBadConn
-	}
-	if err := c.sess.tr.Flush(); err != nil {
-		return driver.ErrBadConn
-	}
-
-	// Read the response status.
-	status, err := c.sess.tr.ReadInt32()
+func (c *conn) Ping(ctx context.Context) error {
+	// Execute SELECT 1 as a lightweight probe
+	rows, err := c.queryContextInternal(ctx, "SELECT 1")
 	if err != nil {
 		return driver.ErrBadConn
 	}
-	switch status {
-	case StatusOK, StatusOKStateChanged:
-		// Both are success; StatusOKStateChanged merely signals that the
-		// server-side modification counter changed (e.g. a DDL committed
-		// elsewhere). No extra payload follows.
-	case StatusError:
-		_ = readH2Error(c.sess.tr) // drain error frame, best-effort
-		return driver.ErrBadConn
-	default:
-		return driver.ErrBadConn
-	}
-
-	// Read the pending-transaction result. The server sends writeInt (4 bytes),
-	// NOT writeBoolean (1 byte) — see TcpServerThread SESSION_HAS_PENDING_TRANSACTION.
-	// Using ReadBool here would leave 3 stale bytes in the read buffer and
-	// corrupt every subsequent read on this connection.
-	_, err = c.sess.tr.ReadInt32()
-	if err != nil {
-		return driver.ErrBadConn
-	}
-
+	// Drain and close the result
+	_ = rows.Close()
 	return nil
 }
 
@@ -162,12 +128,78 @@ func (c *conn) release() {
 	c.busy = false
 }
 
+// QueryContext executes a query that may return rows, such as SELECT.
+// For MVP, this only supports parameterless queries. If args are provided
+// before Phase 6 parameter support is complete, it returns ErrSkip so
+// database/sql can fall back to Prepare + Query.
+//
+// QueryContext implements driver.QueryerContext.
+func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if len(args) > 0 {
+		// Parameters not yet supported in T5.3; let database/sql fall back
+		return nil, driver.ErrSkip
+	}
+	return c.queryContextInternal(ctx, query)
+}
+
+// queryContextInternal is the internal implementation for executing a query.
+// It handles the acquire/release lifecycle but assumes args are already checked.
+func (c *conn) queryContextInternal(ctx context.Context, query string) (driver.Rows, error) {
+	if err := c.acquire(); err != nil {
+		return nil, err
+	}
+	// Note: release happens in rows.Close() after the result is consumed,
+	// since the connection must remain busy while rows are being read.
+
+	rows, err := c.sess.ExecuteQuery(ctx, query, 0, defaultFetchSize)
+	if err != nil {
+		c.release()
+		return nil, err
+	}
+
+	// Set up cleanup callback for when rows are closed
+	rows.closeCallback = func() {
+		c.release()
+	}
+
+	return rows, nil
+}
+
+// ExecContext executes a query that doesn't return rows, such as
+// an INSERT, UPDATE, DELETE, or DDL statement.
+// For MVP, this only supports parameterless queries.
+//
+// ExecContext implements driver.ExecerContext.
+func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if len(args) > 0 {
+		// Parameters not yet supported; let database/sql fall back
+		return nil, driver.ErrSkip
+	}
+
+	if err := c.acquire(); err != nil {
+		return nil, err
+	}
+	defer c.release()
+
+	res, err := c.sess.ExecuteUpdate(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	return &result{affected: res.UpdateCount}, nil
+}
+
+// defaultFetchSize is the default number of rows to fetch in one batch.
+// This matches H2's default fetch size behavior.
+const defaultFetchSize = 100
+
 // Verify interface compliance at compile time.
 var (
 	_ driver.Conn               = (*conn)(nil)
 	_ driver.ConnBeginTx        = (*conn)(nil)
 	_ driver.ConnPrepareContext = (*conn)(nil)
 	_ driver.Pinger             = (*conn)(nil)
+	_ driver.QueryerContext     = (*conn)(nil)
+	_ driver.ExecerContext      = (*conn)(nil)
 	// Validator and SessionResetter in T9.1
-	// QueryerContext and ExecerContext in Phase 5/6
 )

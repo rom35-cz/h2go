@@ -70,6 +70,36 @@ func derefStr(s *string) string {
 	return *s
 }
 
+// readStatus reads a status int from the server and returns nil on success
+// (STATUS_OK or STATUS_OK_STATE_CHANGED), an *H2Error on STATUS_ERROR, or
+// a plain error for STATUS_CLOSED or unexpected codes.
+// This mirrors the Java SessionRemote.done() method.
+func readStatus(tr *Tr) error {
+	status, err := tr.ReadInt32()
+	if err != nil {
+		return fmt.Errorf("h2go: read status: %w", err)
+	}
+	switch status {
+	case StatusOK, StatusOKStateChanged:
+		return nil
+	case StatusError:
+		return readH2Error(tr)
+	case StatusClosed:
+		return fmt.Errorf("h2go: server closed the session")
+	default:
+		return fmt.Errorf("h2go: unexpected status code %d", status)
+	}
+}
+
+// wrapError wraps an underlying error with context about the operation.
+// If err is already a string (message-only), it creates a new error.
+func wrapError(op string, err any) error {
+	if e, ok := err.(error); ok {
+		return fmt.Errorf("h2go: %s: %w", op, e)
+	}
+	return fmt.Errorf("h2go: %s: %v", op, err)
+}
+
 // localTimeZoneID returns the system's local timezone identifier.
 // It first checks the TZ environment variable, then falls back to the
 // Go runtime's local timezone name, and ultimately to "UTC".

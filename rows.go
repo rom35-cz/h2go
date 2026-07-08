@@ -52,6 +52,10 @@ type Rows struct {
 
 	// err holds any error that occurred during operation.
 	err error
+
+	// closeCallback is called after the rows are closed.
+	// Used by conn.QueryContext to release the connection lock.
+	closeCallback func()
 }
 
 // NewRows creates a new Rows instance for reading query results.
@@ -73,7 +77,7 @@ func NewRows(session *Session, resultID int32, columnCount int32, fetchSize int,
 	}
 
 	// Read row count
-	rowCount, err := session.tr.ReadInt64()
+	rowCount, err := session.tr.ReadRowCount()
 	if err != nil {
 		return nil, fmt.Errorf("h2go: NewRows: failed to read row count: %w", err)
 	}
@@ -151,6 +155,12 @@ func (r *Rows) Close() error {
 	r.bufferedRows = nil
 	r.currentRow = nil
 	r.columns = nil
+
+	// Call the close callback if set (used to release connection lock)
+	if r.closeCallback != nil {
+		r.closeCallback()
+		r.closeCallback = nil
+	}
 
 	return closeErr
 }
@@ -257,6 +267,11 @@ func (r *Rows) fetchMoreRows(fetch int) error {
 	}
 	if err := r.session.tr.Flush(); err != nil {
 		return fmt.Errorf("h2go: Rows.fetchMoreRows: flush failed: %w", err)
+	}
+
+	// Server responds: writeInt(STATUS_OK) then row bytes (sendRows).
+	if err := readStatus(r.session.tr); err != nil {
+		return fmt.Errorf("h2go: Rows.fetchMoreRows: %w", err)
 	}
 
 	// Read the rows
@@ -420,6 +435,11 @@ func (s *Session) ExecuteQuery(ctx context.Context, sql string, maxRows int64, f
 		_ = cmd.Close(s)
 		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write fetchSize: %w", err)
 	}
+	// sendParameters: writeInt(paramCount=0) — no values for parameterless queries.
+	if err := s.tr.WriteInt32(0); err != nil {
+		_ = cmd.Close(s)
+		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write paramCount: %w", err)
+	}
 	if err := s.tr.Flush(); err != nil {
 		_ = cmd.Close(s)
 		return nil, fmt.Errorf("h2go: ExecuteQuery: flush failed: %w", err)
@@ -433,7 +453,13 @@ func (s *Session) ExecuteQuery(ctx context.Context, sql string, maxRows int64, f
 	default:
 	}
 
-	// Read response: column count
+	// Read response: status then columnCount.
+	// Server: writeInt(status).writeInt(columnCount) per TcpServerThread.
+	if err := readStatus(s.tr); err != nil {
+		_ = cmd.Close(s)
+		return nil, fmt.Errorf("h2go: ExecuteQuery: %w", err)
+	}
+
 	columnCount, err := s.tr.ReadInt32()
 	if err != nil {
 		_ = cmd.Close(s)

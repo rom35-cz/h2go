@@ -374,3 +374,213 @@ func TestIntegration_Ping(t *testing.T) {
 
 	t.Log("ping successful: connection is alive")
 }
+
+// TestIntegration_QueryContext exercises db.QueryContext with a real SELECT query.
+// It verifies: column names, row count, typed values, and clean close.
+func TestIntegration_QueryContext(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+
+	ctx := context.Background()
+
+	// SELECT 1 — simplest possible query.
+	rows, err := db.QueryContext(ctx, "SELECT 1")
+	if err != nil {
+		t.Fatalf("QueryContext(SELECT 1) failed: %v", err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("Columns() failed: %v", err)
+	}
+	if len(cols) != 1 {
+		t.Fatalf("expected 1 column, got %d", len(cols))
+	}
+
+	if !rows.Next() {
+		t.Fatal("expected one row")
+	}
+	var v int64
+	if err := rows.Scan(&v); err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if v != 1 {
+		t.Errorf("SELECT 1: got %d, want 1", v)
+	}
+	if rows.Next() {
+		t.Error("expected only one row")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	t.Log("SELECT 1 passed")
+}
+
+// TestIntegration_QuerySelect exercises a multi-row, multi-column SELECT over seed data.
+func TestIntegration_QuerySelect(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+
+	ctx := context.Background()
+
+	rows, err := db.QueryContext(ctx, "SELECT id, name FROM people ORDER BY id")
+	if err != nil {
+		t.Fatalf("QueryContext failed: %v", err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("Columns() failed: %v", err)
+	}
+	if len(cols) != 2 {
+		t.Fatalf("expected 2 columns, got %d: %v", len(cols), cols)
+	}
+
+	var count int
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			t.Fatalf("Scan row %d: %v", count, err)
+		}
+		t.Logf("  row %d: id=%d name=%s", count, id, name)
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if count == 0 {
+		t.Error("expected at least one row from people table")
+	}
+	t.Logf("SELECT people: %d rows returned", count)
+}
+
+// TestIntegration_ExecContext exercises db.ExecContext with DDL and DML statements.
+func TestIntegration_ExecContext(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+
+	ctx := context.Background()
+
+	// CREATE TABLE (DDL).
+	_, err := db.ExecContext(ctx,
+		"CREATE TABLE IF NOT EXISTS t53_exec (id INT PRIMARY KEY, val VARCHAR(100))")
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	t.Log("CREATE TABLE OK")
+
+	// Clean up any leftover rows from previous run.
+	_, _ = db.ExecContext(ctx, "DELETE FROM t53_exec")
+
+	// INSERT.
+	res, err := db.ExecContext(ctx, "INSERT INTO t53_exec VALUES (1, 'hello')")
+	if err != nil {
+		t.Fatalf("INSERT failed: %v", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		t.Fatalf("RowsAffected: %v", err)
+	}
+	if affected != 1 {
+		t.Errorf("INSERT: expected 1 affected row, got %d", affected)
+	}
+	t.Logf("INSERT affected %d row(s)", affected)
+
+	// UPDATE.
+	res, err = db.ExecContext(ctx, "UPDATE t53_exec SET val = 'world' WHERE id = 1")
+	if err != nil {
+		t.Fatalf("UPDATE failed: %v", err)
+	}
+	affected, _ = res.RowsAffected()
+	if affected != 1 {
+		t.Errorf("UPDATE: expected 1 affected row, got %d", affected)
+	}
+	t.Logf("UPDATE affected %d row(s)", affected)
+
+	// DELETE.
+	res, err = db.ExecContext(ctx, "DELETE FROM t53_exec WHERE id = 1")
+	if err != nil {
+		t.Fatalf("DELETE failed: %v", err)
+	}
+	affected, _ = res.RowsAffected()
+	if affected != 1 {
+		t.Errorf("DELETE: expected 1 affected row, got %d", affected)
+	}
+	t.Logf("DELETE affected %d row(s)", affected)
+
+	// DROP TABLE.
+	_, err = db.ExecContext(ctx, "DROP TABLE IF EXISTS t53_exec")
+	if err != nil {
+		t.Fatalf("DROP TABLE failed: %v", err)
+	}
+	t.Log("DROP TABLE OK")
+}
+
+// TestIntegration_QueryLargeResult checks that a result larger than one fetch
+// batch is correctly paginated.
+func TestIntegration_QueryLargeResult(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+
+	ctx := context.Background()
+
+	// system_range(1, N) generates N rows without needing a real table.
+	const n = 250 // larger than default fetch size (100)
+	rows, err := db.QueryContext(ctx,
+		"SELECT x FROM SYSTEM_RANGE(1, 250)")
+	if err != nil {
+		t.Fatalf("QueryContext(system_range) failed: %v", err)
+	}
+	defer rows.Close()
+
+	var prev, count int64
+	for rows.Next() {
+		var x int64
+		if err := rows.Scan(&x); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if x != prev+1 {
+			t.Fatalf("gap: got %d after %d", x, prev)
+		}
+		prev = x
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if count != n {
+		t.Errorf("expected %d rows, got %d", n, count)
+	}
+	t.Logf("large result: %d rows fetched in batches", count)
+}
+
+// integrationDB opens a *sql.DB from env credentials and registers a cleanup.
+func integrationDB(t *testing.T, env map[string]string) *sql.DB {
+	t.Helper()
+	cfg, err := ParseDSN(env["JDBC_URL"])
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	MergeCredentials(cfg, env["JDBC_USER"], env["JDBC_PASSWORD"])
+	db, err := OpenDB(cfg)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}

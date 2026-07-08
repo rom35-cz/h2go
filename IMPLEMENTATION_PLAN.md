@@ -381,6 +381,23 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Integration tests: `SELECT 1`, `SELECT` over a temp table with multiple rows/columns, batch-boundary fetch (result larger than one fetch block).
 - **Deliverables:** query path in `conn.go`, integration tests.
 - **Done when:** Live `SELECT` queries return correct typed values; large result sets paginate correctly.
+- **Implementation notes:**
+  - **Root cause of the T5.2/T5.3 hang**: Three concurrent protocol framing bugs discovered during investigation:
+    1. `COMMAND_EXECUTE_QUERY` (rows.go): missing `writeInt(paramCount=0)` after `fetchSize`; server blocked in `setParameters()` waiting for the count.
+    2. `COMMAND_EXECUTE_UPDATE` (session.go): missing `readInt(status)` before `readRowCount()`; client consumed the status int as the first 4 bytes of the row count.
+    3. `RESULT_FETCH_ROWS` (rows.go): missing `readInt(STATUS_OK)` before reading row byte-flags; the STATUS_OK written by the server went unread.
+    4. `SESSION_PREPARE` (command.go): status int was read but discarded without error checking; now checked via `readStatus()`.
+  - Root pattern: every H2 operation follows flush → `session.done()` → response-payload reads. `session.done()` does flush + read-status in one call. Our Go code had been missing either the paramCount write or the status read on several paths.
+  - Added `readStatus(tr *Tr) error` helper to errors.go: reads status int, returns nil for STATUS_OK/STATUS_OK_STATE_CHANGED, `*H2Error` for STATUS_ERROR, plain error for STATUS_CLOSED/unknown.
+  - `conn.go`: added `QueryContext` (driver.QueryerContext) and `ExecContext` (driver.ExecerContext) to conn; returns `driver.ErrSkip` when args are non-empty so `database/sql` falls back to the Prepare path in Phase 6. Connection lock released via `closeCallback` on `Rows.Close()`.
+  - `result.go`: `driver.Result` with `RowsAffected()` returning int64; `LastInsertId()` returns unsupported error (Phase 10).
+  - `session.go`: `ExecuteUpdate(ctx, sql)` prepares + executes + closes ad-hoc update; `ExecuteUpdatePrepared(cmd)` for reusable prepared commands.
+  - Ping re-pointed to `SELECT 1`: executes a full query round-trip and drains the result, proving the connection is alive.
+  - Integration tests added: `TestIntegration_QueryContext` (SELECT 1), `TestIntegration_QuerySelect` (5-row people table), `TestIntegration_ExecContext` (CREATE/INSERT/UPDATE/DELETE/DROP), `TestIntegration_QueryLargeResult` (250 rows, 3 fetch batches).
+  - Also incorporates ExecerContext + result.go work originally planned as T6.2 (since it was naturally implemented alongside QueryerContext).
+  - Test count: 249 total. All pass with `-race`. 13 integration tests pass against H2 2.4.240.
+  - Verified: `go build ./...`, `go vet ./...`, `make lint` (0 issues), `go test -race`, `make test-integration` all green.
+- **Status:** ✅ Done — 2026-07-08
 
 ---
 
@@ -405,6 +422,7 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Integration: `CREATE TABLE`, `INSERT`, `UPDATE`, `DELETE`, `MERGE` with affected-row assertions.
 - **Deliverables:** `result.go`, exec path, integration tests.
 - **Done when:** DDL/DML execute; affected counts correct.
+- **Status:** ✅ Done (merged into T5.3) — 2026-07-08
 
 ### T6.3 Prepared statements
 - **Goal:** Reusable `driver.Stmt` with param metadata.
