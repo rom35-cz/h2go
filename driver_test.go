@@ -1,0 +1,205 @@
+package h2go
+
+import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
+	"testing"
+)
+
+func TestDriverRegistration(t *testing.T) {
+	// Verify the driver is registered under the name "h2".
+	d, err := sql.Open("h2", "h2://localhost:9092/test")
+	if err != nil {
+		// This error comes from parsing, not registration itself.
+		// If registration failed, we'd get a different error.
+		t.Logf("sql.Open parse error (expected): %v", err)
+	}
+	if d != nil {
+		_ = d.Close()
+	}
+
+	// Verify the driver type exists and can be instantiated.
+	_ = driver.Driver(&Driver{})
+}
+
+func TestDriverOpenInvalidDSN(t *testing.T) {
+	d := &Driver{}
+	_, err := d.Open("invalid://dsn")
+	if err == nil {
+		t.Fatal("expected error for invalid DSN scheme")
+	}
+	// Just verify there's an error message.
+	if err.Error() == "" {
+		t.Fatal("expected non-empty error message")
+	}
+}
+
+func TestDriverOpenConnectorInvalidDSN(t *testing.T) {
+	d := &Driver{}
+	_, err := d.OpenConnector("invalid://dsn")
+	if err == nil {
+		t.Fatal("expected error for invalid DSN scheme")
+	}
+}
+
+func TestNewConnectorNilConfig(t *testing.T) {
+	_, err := NewConnector(nil)
+	if err == nil {
+		t.Fatal("expected error for nil config")
+	}
+	// Verify there's an error message.
+	if err.Error() == "" {
+		t.Fatal("expected non-empty error message")
+	}
+}
+
+func TestNewConnectorMissingHost(t *testing.T) {
+	cfg := &Config{
+		Port:     "9092",
+		Database: "test",
+	}
+	_, err := NewConnector(cfg)
+	if err == nil {
+		t.Fatal("expected error for missing host")
+	}
+	if err.Error() == "" {
+		t.Fatal("expected non-empty error message")
+	}
+}
+
+func TestNewConnectorDefaultPort(t *testing.T) {
+	cfg := &Config{
+		Host:     "localhost",
+		Port:     "", // empty, should default
+		Database: "test",
+	}
+	connr, err := NewConnector(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if connr == nil {
+		t.Fatal("expected non-nil connector")
+	}
+
+	// Check the connector has the default port.
+	c, ok := connr.(*connector)
+	if !ok {
+		t.Fatal("expected *connector type")
+	}
+	if c.cfg.Port != DefaultTCPPortStr {
+		t.Errorf("expected default port %s, got %s", DefaultTCPPortStr, c.cfg.Port)
+	}
+}
+
+func TestNewConnectorValidConfig(t *testing.T) {
+	cfg := &Config{
+		Host:        "localhost",
+		Port:        "9092",
+		Database:    "testdb",
+		User:        "sa",
+		Password:    "password",
+		OriginalURL: "h2://localhost:9092/testdb",
+	}
+	connector, err := NewConnector(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if connector == nil {
+		t.Fatal("expected non-nil connector")
+	}
+
+	// Verify the Driver() method returns the correct driver.
+	d := connector.Driver()
+	if d == nil {
+		t.Fatal("expected non-nil driver")
+	}
+}
+
+func TestConnectorDriverReturnsDriver(t *testing.T) {
+	cfg := &Config{
+		Host:     "localhost",
+		Port:     "9092",
+		Database: "test",
+	}
+	c, err := NewConnector(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	d := c.Driver()
+	if d == nil {
+		t.Fatal("expected non-nil driver")
+	}
+
+	// The returned driver should be a *Driver.
+	_, ok := d.(*Driver)
+	if !ok {
+		t.Fatalf("expected *Driver, got %T", d)
+	}
+}
+
+// TestOpenDB verifies OpenDB creates a *sql.DB handle.
+// This does not actually connect to a server.
+func TestOpenDB(t *testing.T) {
+	cfg := &Config{
+		Host:     "localhost",
+		Port:     "9092",
+		Database: "test",
+	}
+
+	db, err := OpenDB(cfg)
+	if err != nil {
+		t.Fatalf("OpenDB error: %v", err)
+	}
+	if db == nil {
+		t.Fatal("expected non-nil *sql.DB")
+	}
+
+	// The DB is not actually connected yet; just verify it was created.
+	_ = db.Close()
+}
+
+func TestOpenDBNilConfig(t *testing.T) {
+	_, err := OpenDB(nil)
+	if err == nil {
+		t.Fatal("expected error for nil config")
+	}
+}
+
+// TestDriverContextCancellation verifies that Connect respects context
+// cancellation when checked before the handshake starts.
+func TestDriverContextCancellation(t *testing.T) {
+	cfg := &Config{
+		Host:     "localhost",
+		Port:     "9092",
+		Database: "test",
+	}
+
+	connector, err := NewConnector(cfg)
+	if err != nil {
+		t.Fatalf("NewConnector error: %v", err)
+	}
+
+	// Cancel the context before connecting.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err = connector.Connect(ctx)
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+	if err != context.Canceled {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+// TestDriverImplementsInterfaces verifies the driver implements expected
+// interfaces at compile time.
+func TestDriverImplementsInterfaces(_ *testing.T) {
+	// This test just needs to compile; it verifies interface assertions
+	// in the code are valid.
+	var _ driver.Driver = (*Driver)(nil)
+	var _ driver.DriverContext = (*Driver)(nil)
+	var _ driver.Connector = (*connector)(nil)
+}

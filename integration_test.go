@@ -3,6 +3,8 @@
 package h2go
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -235,4 +237,101 @@ func TestIntegration_MultipleHandshakes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestIntegration_DriverOpenDB exercises the database/sql driver
+// integration: open a *sql.DB, get a connection, close it cleanly.
+// This verifies the T4.1 Driver, Connector, and Conn wiring.
+func TestIntegration_DriverOpenDB(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+
+	url := env["JDBC_URL"]
+	user := env["JDBC_USER"]
+	pw := env["JDBC_PASSWORD"]
+
+	// Parse the DSN from env.
+	cfg, err := ParseDSN(url)
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	// Overlay credentials from environment.
+	MergeCredentials(cfg, user, pw)
+
+	t.Logf("opening db: host=%s port=%s database=%s user=%s", cfg.Host, cfg.Port, cfg.Database, cfg.User)
+
+	// Open database via config-based API (T4.1 requirement).
+	db, err := OpenDB(cfg)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("db.Close error (may be expected): %v", err)
+		}
+	}()
+
+	// Verify we can get a raw connection (validates Connector.Connect and conn creation).
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("db.Conn failed: %v", err)
+	}
+
+	// Exercise the raw driver's Close method.
+	err = conn.Close()
+	if err != nil {
+		t.Errorf("conn.Close error: %v", err)
+	}
+
+	t.Log("driver integration test passed: OpenDB -> Conn -> Close works")
+}
+
+// TestIntegration_DriverOpenDSN exercises sql.Open("h2", dsn) directly,
+// then verifies the connection can be closed.
+func TestIntegration_DriverOpenDSN(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+
+	url := env["JDBC_URL"]
+	user := env["JDBC_USER"]
+	pw := env["JDBC_PASSWORD"]
+
+	// Merge credentials into a native DSN for cleaner url handling.
+	cfg, err := ParseDSN(url)
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	MergeCredentials(cfg, user, pw)
+
+	// Build a native DSN that includes credentials.
+	dsn := fmt.Sprintf("h2://%s:%s@%s:%s/%s", cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
+	t.Logf("opening db with DSN: h2://%s:***@%s:%s/%s", cfg.User, cfg.Host, cfg.Port, cfg.Database)
+
+	// Open via sql.Open with DSN (verifies Driver.Open and Driver.OpenConnector).
+	db, err := sql.Open("h2", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("db.Close error: %v", err)
+		}
+	}()
+
+	// Get a raw connection.
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("db.Conn failed: %v", err)
+	}
+
+	// Close the raw connection.
+	if err := conn.Close(); err != nil {
+		t.Errorf("conn.Close error: %v", err)
+	}
+
+	t.Log("driver DSN integration test passed: sql.Open -> Conn -> Close works")
 }

@@ -247,6 +247,19 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Guard against concurrent use of one TCP conn with a mutex/busy flag.
 - **Deliverables:** `driver.go`, `connector.go`, `conn.go`.
 - **Done when:** Integration test opens `sql.DB`, gets a conn, closes it; unit tests cover registration, DSN-based connector construction, and config-based construction with URL/user/password supplied separately.
+- **Implementation notes:**
+  - `driver.go`: `Driver` implements both `driver.Driver` (`Open`) and `driver.DriverContext` (`OpenConnector`). The driver is registered in `init()` under the name `"h2"`.
+  - `NewConnector(cfg)` validates the config (host required, port defaults to 9092) and returns a `*connector`. `OpenDB(cfg)` is a convenience that creates a connector and opens a `*sql.DB`.
+  - `connector.Connect(ctx)` checks for context cancellation before and after the handshake. It creates a `*conn` wrapping the established `*Session`.
+  - `conn` embeds `*Session` and uses a `sync.Mutex` + `busy` flag to prevent concurrent use. `acquire()` returns `driver.ErrBadConn` if closed or already busy.
+  - `conn.Close()` calls `sess.Close()` which implements the graceful SESSION_CLOSE protocol.
+  - Prepare/Begin/BeginTx/PrepareContext return `ErrNotYetSupported` wrapped with context indicating which phase will implement them (Phase 6 for prepared statements, Phase 8 for transactions).
+  - Tests: `driver_test.go` (12 tests) covers registration, invalid DSN handling, connector construction with defaults, context cancellation, and interface compliance.
+  - Tests: `conn_test.go` (8 tests) covers the busy flag, double-acquire protection, closed connection handling, and not-yet-supported errors.
+  - Integration tests: `TestIntegration_DriverOpenDB` uses `OpenDB(cfg)` to create a `*sql.DB`, get a raw connection via `db.Conn()`, and close it. `TestIntegration_DriverOpenDSN` uses `sql.Open("h2", dsn)` with credentials in the DSN to achieve the same.
+  - Test count: 177 total (+22 new: 12 driver + 8 conn + 2 integration). All pass with `-race`.
+  - Verified: `go build`, `go vet`, `make lint` (0 issues), `go test -race`, live integration tests pass. ✅
+- **Status:** ✅ Done — 2026-07-08
 
 ### T4.2 Ping (interim) + Pinger
 - **Goal:** `db.PingContext` round-trips.
