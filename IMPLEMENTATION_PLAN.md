@@ -96,6 +96,13 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Reject unknown schemes with actionable errors.
 - **Deliverables:** extended `dsn.go`, expanded `dsn_test.go`.
 - **Done when:** Both DSN styles parse to equivalent `Config`; credential overlay tested; unsupported schemes rejected.
+- **Implementation notes:**
+  - `ParseDSN` rewritten to dispatch on prefix: `jdbc:h2:` → `parseJDBC`, `h2://`/`h2+tcp://` → `parseNative`, anything else → clear error.
+  - Extracted shared host/port validation into `validate(cfg)` helper.
+  - `parseNative` uses `url.Parse` giving standard percent-decoding on userinfo and query parameters for free.
+  - `MergeCredentials` fills only empty `User`/`Password` fields, preserving DSN-provided values. Tested precedence: DSN credentials always win over environment overrides.
+  - Verification: `go build ./...`, `go vet ./...`, `go test ./...` (28 tests, 0 failures), `make lint` all pass. ✅
+- **Status:** ✅ Done — 2026-07-08
 
 ---
 
