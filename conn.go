@@ -89,6 +89,51 @@ func (c *conn) PrepareContext(_ context.Context, _ string) (driver.Stmt, error) 
 	return nil, fmt.Errorf("h2go: PrepareContext: %w (prepared statements coming in Phase 6)", ErrNotYetSupported)
 }
 
+// Ping validates the connection by performing a lightweight round-trip
+// to the server using SESSION_HAS_PENDING_TRANSACTION. This is an interim
+// implementation; in Phase 5 (T5.3) it will be re-pointed to execute
+// "SELECT 1" once query execution is available.
+//
+// Ping implements driver.Pinger.
+func (c *conn) Ping(_ context.Context) error {
+	if err := c.acquire(); err != nil {
+		return err
+	}
+	defer c.release()
+
+	// Send SESSION_HAS_PENDING_TRANSACTION as a lightweight probe.
+	// This operation returns a boolean (true if there are uncommitted changes).
+	// We don't care about the value, only that the server responds.
+	if err := c.sess.tr.WriteInt32(SessionHasPendingTransaction); err != nil {
+		return driver.ErrBadConn
+	}
+	if err := c.sess.tr.Flush(); err != nil {
+		return driver.ErrBadConn
+	}
+
+	// Read status.
+	status, err := c.sess.tr.ReadInt32()
+	if err != nil {
+		return driver.ErrBadConn
+	}
+	if status != StatusOK {
+		// Server returned an error or unexpected status.
+		// Read and discard the error details for now.
+		if status == StatusError {
+			_ = readH2Error(c.sess.tr)
+		}
+		return driver.ErrBadConn
+	}
+
+	// Read the boolean result (has pending transaction).
+	_, err = c.sess.tr.ReadBool()
+	if err != nil {
+		return driver.ErrBadConn
+	}
+
+	return nil
+}
+
 // acquire marks the connection as busy, preventing concurrent use.
 // Returns an error if the connection is already busy or closed.
 // Callers must defer release() after a successful acquire.
@@ -118,7 +163,7 @@ var (
 	_ driver.Conn               = (*conn)(nil)
 	_ driver.ConnBeginTx        = (*conn)(nil)
 	_ driver.ConnPrepareContext = (*conn)(nil)
-	// Pinger will be implemented in T4.2
+	_ driver.Pinger             = (*conn)(nil)
 	// Validator and SessionResetter in T9.1
 	// QueryerContext and ExecerContext in Phase 5/6
 )

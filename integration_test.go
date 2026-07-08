@@ -335,3 +335,42 @@ func TestIntegration_DriverOpenDSN(t *testing.T) {
 
 	t.Log("driver DSN integration test passed: sql.Open -> Conn -> Close works")
 }
+
+// TestIntegration_Ping verifies db.PingContext succeeds against a live H2 server.
+// This tests the driver.Pinger implementation with a real round-trip.
+func TestIntegration_Ping(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+
+	url := env["JDBC_URL"]
+	user := env["JDBC_USER"]
+	pw := env["JDBC_PASSWORD"]
+
+	cfg, err := ParseDSN(url)
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	MergeCredentials(cfg, user, pw)
+
+	t.Logf("pinging: host=%s port=%s database=%s", cfg.Host, cfg.Port, cfg.Database)
+
+	db, err := OpenDB(cfg)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("db.Close error: %v", err)
+		}
+	}()
+
+	// Ping should succeed against a live server.
+	ctx := context.Background()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatalf("PingContext failed: %v", err)
+	}
+
+	t.Log("ping successful: connection is alive")
+}

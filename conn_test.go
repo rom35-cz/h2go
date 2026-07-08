@@ -12,6 +12,7 @@ func TestConnImplementsInterfaces(_ *testing.T) {
 	var _ driver.Conn = (*conn)(nil)
 	var _ driver.ConnBeginTx = (*conn)(nil)
 	var _ driver.ConnPrepareContext = (*conn)(nil)
+	var _ driver.Pinger = (*conn)(nil)
 }
 
 // TestConnPrepareNotSupported verifies Prepare returns not-yet-supported error.
@@ -159,5 +160,45 @@ func TestErrNotYetSupported(t *testing.T) {
 	}
 	if ErrNotYetSupported.Error() == "" {
 		t.Fatal("ErrNotYetSupported should have a message")
+	}
+}
+
+// TestConnPingClosedConnection verifies Ping returns ErrBadConn
+// when the connection is closed.
+func TestConnPingClosedConnection(t *testing.T) {
+	c := &conn{
+		sess: nil, // closed
+	}
+
+	err := c.Ping(context.Background())
+	if err == nil {
+		t.Fatal("expected error for Ping on closed connection")
+	}
+	if err != driver.ErrBadConn {
+		t.Errorf("expected driver.ErrBadConn, got %v", err)
+	}
+}
+
+// TestConnPingBusy verifies Ping returns an error when the connection
+// is already in use (busy).
+func TestConnPingBusy(t *testing.T) {
+	c := &conn{
+		sess: &Session{id: "test-session"},
+	}
+
+	// Acquire the connection (simulating an in-progress operation).
+	err := c.acquire()
+	if err != nil {
+		t.Fatalf("acquire failed: %v", err)
+	}
+
+	// Ping should fail because the connection is busy.
+	err = c.Ping(context.Background())
+	if err == nil {
+		t.Fatal("expected error for Ping while busy")
+	}
+	// Should NOT be ErrBadConn (that's for closed connections).
+	if err == driver.ErrBadConn {
+		t.Error("expected non-ErrBadConn error for busy connection, got ErrBadConn")
 	}
 }

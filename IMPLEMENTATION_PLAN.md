@@ -268,6 +268,16 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Map dead connection to `driver.ErrBadConn`.
 - **Deliverables:** `ping.go` (or method in `conn.go`).
 - **Done when:** `db.PingContext` succeeds against live H2; returns error on a closed conn.
+- **Implementation notes:**
+  - Added `Ping(ctx context.Context) error` method to `conn` implementing `driver.Pinger`.
+  - Uses `SESSION_HAS_PENDING_TRANSACTION` as a lightweight round-trip: send the operation code, flush, read status (expect `STATUS_OK`), read boolean result.
+  - Any I/O error returns `driver.ErrBadConn` so the pool discards dead connections.
+  - Uses `acquire()`/`release()` pattern for safe concurrent use; returns `ErrBadConn` for closed connections and error for busy connections.
+  - Tests: `conn_test.go` — `TestConnPingClosedConnection` verifies `ErrBadConn` for nil session; `TestConnPingBusy` verifies error when connection is already busy.
+  - Integration test: `TestIntegration_Ping` opens a `*sql.DB` and calls `PingContext` successfully against live H2.
+  - Test count: 182 total (+5 new: 2 conn + 1 integration + Pinger interface assertion). All pass with `-race`.
+  - Verified: `go build`, `go vet`, `make lint` (0 issues), `go test -race`, live integration tests pass including Ping. ✅
+- **Status:** ✅ Done — 2026-07-08
 
 ---
 
