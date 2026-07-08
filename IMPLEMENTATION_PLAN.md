@@ -102,6 +102,12 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - `parseNative` uses `url.Parse` giving standard percent-decoding on userinfo and query parameters for free.
   - `MergeCredentials` fills only empty `User`/`Password` fields, preserving DSN-provided values. Tested precedence: DSN credentials always win over environment overrides.
   - Verification: `go build ./...`, `go vet ./...`, `go test ./...` (28 tests, 0 failures), `make lint` all pass. ✅
+- **Phase 1 review fixes (2026-07-08):**
+  - **Port range validation**: `url.Parse` accepts out-of-range numeric ports (e.g. `0`, `65536`) without error. Added `1 ≤ port ≤ 65535` range check to `validate()`; added 4 test cases covering JDBC and native variants.
+  - **Dead guard removed**: `parseJDBC` had an unreachable `!strings.HasPrefix(input, prefix)` guard (ParseDSN guarantees the prefix before dispatching). Removed.
+  - **Dead `errors.Is` in test**: `TestParseDSN_EmptyDSN` used `errors.Is(err, errors.New(…))` which always returns false (distinct pointer). Replaced with a plain `err.Error()` check; removed the unused `errors` import.
+  - **Doc comment formatting**: `ParseDSN` godoc mixed tab+space indentation, causing labels to render inside code blocks. Rewritten to proper godoc format (prose labels, single-tab code blocks). Verified with `go doc ParseDSN`.
+  - Verified: all 32 tests pass, `make lint` clean. ✅
 - **Status:** ✅ Done — 2026-07-08
 
 ---

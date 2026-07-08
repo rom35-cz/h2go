@@ -33,15 +33,15 @@ type Config struct {
 
 // ParseDSN parses an H2 DSN string into a Config.
 //
-// Supported formats:
+// JDBC-style format:
 //
-//	  JDBC-style:
-//		   jdbc:h2:tcp://host:port/database
-//		   jdbc:h2:tcp://host:port/database;PARAM1=val1;PARAM2=val2
+//	jdbc:h2:tcp://host:port/database
+//	jdbc:h2:tcp://host:port/database;PARAM1=val1;PARAM2=val2
 //
-//	  Native Go DSN:
-//		   h2://user:password@host:port/database?k=v
-//		   h2+tcp://user:password@host:port/database?k=v
+// Native Go DSN format:
+//
+//	h2://user:password@host:port/database?k=v
+//	h2+tcp://user:password@host:port/database?k=v
 //
 // The default port is 9092 when omitted.
 // For JDBC-style DSNs, semicolon-separated parameters are parsed and
@@ -87,10 +87,8 @@ func MergeCredentials(cfg *Config, user, password string) {
 }
 
 func parseJDBC(input string) (*Config, error) {
+	// ParseDSN guarantees the "jdbc:h2:" prefix before calling here.
 	const prefix = "jdbc:h2:"
-	if !strings.HasPrefix(input, prefix) {
-		return nil, fmt.Errorf("unsupported DSN scheme: %q", input)
-	}
 
 	cfg := &Config{
 		OriginalURL: input,
@@ -191,8 +189,12 @@ func validate(cfg *Config) (*Config, error) {
 	if cfg.Host == "" {
 		return nil, errors.New("missing host in DSN")
 	}
-	if _, err := strconv.Atoi(cfg.Port); err != nil {
+	port, err := strconv.Atoi(cfg.Port)
+	if err != nil {
 		return nil, fmt.Errorf("invalid port %q: %w", cfg.Port, err)
+	}
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("invalid port %q: must be in range 1-65535", cfg.Port)
 	}
 	return cfg, nil
 }

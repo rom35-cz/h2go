@@ -1,7 +1,6 @@
 package h2go
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
@@ -87,8 +86,8 @@ func TestParseDSN_EmptyDSN(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty DSN, got nil")
 	}
-	if !errors.Is(err, errors.New("empty DSN")) && err.Error() != "empty DSN" {
-		t.Errorf("unexpected error message: %v", err)
+	if err.Error() != "empty DSN" {
+		t.Errorf("error = %q, want %q", err.Error(), "empty DSN")
 	}
 }
 
@@ -111,6 +110,29 @@ func TestParseDSN_UnsupportedScheme(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error = %q, want containing %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestParseDSN_PortOutOfRange(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"port 0 JDBC", "jdbc:h2:tcp://localhost:0/db"},
+		{"port 65536 JDBC", "jdbc:h2:tcp://localhost:65536/db"},
+		{"port 0 native", "h2://localhost:0/db"},
+		{"port 65536 native", "h2://localhost:65536/db"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseDSN(tc.input)
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.input)
+			}
+			if !strings.Contains(err.Error(), "1-65535") {
+				t.Errorf("error = %q, want containing range hint '1-65535'", err.Error())
 			}
 		})
 	}
