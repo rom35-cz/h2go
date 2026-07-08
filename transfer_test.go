@@ -580,11 +580,22 @@ func TestUTF16Decode_LoneSurrogates(t *testing.T) {
 
 // ---- Error cases ----
 
-func TestTr_ReadOnWriteOnly(t *testing.T) {
+func TestTr_ReadFromEmptyBuffer(t *testing.T) {
 	r := NewReader(new(bytes.Buffer))
 	_, err := r.ReadByte()
 	if err == nil {
 		t.Fatal("expected error reading from empty buffer")
+	}
+}
+
+func TestTr_ReadOnWriteOnly(t *testing.T) {
+	w := NewWriter(&writeCloseBuffer{new(bytes.Buffer)})
+	_, err := w.ReadByte()
+	if err == nil {
+		t.Fatal("expected error reading from write-only transfer")
+	}
+	if !strings.Contains(err.Error(), "write-only") {
+		t.Errorf("error = %q, want message containing 'write-only'", err.Error())
 	}
 }
 

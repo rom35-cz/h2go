@@ -12,7 +12,7 @@ import (
 type Config struct {
 	// Host is the server hostname or IP address (required).
 	Host string
-	// Port is the TCP port as a string. Defaults to "9092" if not specified.
+	// Port is the TCP port as a string. Defaults to DefaultTCPPortStr if not specified.
 	Port string
 	// Database is the H2 database name. The leading "/" from the URL path
 	// is stripped (e.g. "/h2-go" becomes "h2-go").
@@ -92,7 +92,7 @@ func parseJDBC(input string) (*Config, error) {
 
 	cfg := &Config{
 		OriginalURL: input,
-		Port:        "9092",
+		Port:        DefaultTCPPortStr,
 		Params:      make(map[string]string),
 	}
 
@@ -149,7 +149,7 @@ func parseJDBC(input string) (*Config, error) {
 func parseNative(input string) (*Config, error) {
 	cfg := &Config{
 		OriginalURL: input,
-		Port:        "9092",
+		Port:        DefaultTCPPortStr,
 		Params:      make(map[string]string),
 	}
 

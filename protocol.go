@@ -1,6 +1,6 @@
 package h2go
 
-// TCP protocol version constants.
+// TCP protocol version and port constants.
 const (
 	// TCPProtocolVersion21 is the native TCP protocol version used by this
 	// driver. Only protocol 21 is supported.
@@ -13,6 +13,13 @@ const (
 	// TCPProtocolVersionMaxSupported is the maximum supported version for
 	// protocol negotiation. Must equal TCPProtocolVersion21.
 	TCPProtocolVersionMaxSupported = TCPProtocolVersion21
+
+	// DefaultTCPPort is the default H2 TCP server port.
+	DefaultTCPPort = 9092
+
+	// DefaultTCPPortStr is the string form of DefaultTCPPort, used wherever
+	// port values are stored as strings (e.g. Config.Port).
+	DefaultTCPPortStr = "9092"
 )
 
 // Status codes returned by the H2 server after a request.
@@ -96,7 +103,4 @@ const (
 	ValueTypeTimeTZ            = 29 // TIME WITH TIME ZONE
 	ValueTypeBinary            = 30 // BINARY
 	ValueTypeDecfloat          = 31 // DECFLOAT
-
-	// DefaultTCPPort is the default H2 TCP server port.
-	DefaultTCPPort = 9092
 )

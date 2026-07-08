@@ -150,8 +150,15 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Generated keys mode constants from `org.h2.engine.GeneratedKeysMode`.
   - Value type codes (`ValueTypeNull=0` … `ValueTypeDecfloat=31`) from `org.h2.value.Transfer`, with source enum names in doc comments.
   - `DefaultTCPPort` constant added for use by DSN parsing (replaces a hardcoded string).
-  - No changes needed in `dsn.go` for `DefaultTCPPort` — the default port is an implementation detail of the parser and can be addressed in a future refactor.
-  - Verified: `go build`, `go vet`, `go test`, `make lint` all pass. ✅
+- **Phase 2 review fixes (2026-07-08):**
+  - **Bug — nil panic on read from write-only `Tr`**: `NewWriter`-created `Tr` has `t.r == nil`; all read methods called on it would panic. Added `checkReader()` helper called at the top of `ReadByte`, `ReadInt16`, `ReadInt32`, `ReadInt64`; all higher-level reads propagate that error.
+  - **Wrong test `TestTr_ReadOnWriteOnly`**: The test created `NewReader` (read-only), then read from an empty buffer (getting EOF). It did not test the nil-reader case it claimed to. Renamed the existing test to `TestTr_ReadFromEmptyBuffer`; added a new correct `TestTr_ReadOnWriteOnly` using `NewWriter` that asserts the 'write-only' error message.
+  - **`DefaultTCPPort` in wrong const block**: It was inside the value-type (`ValueType*`) block. Moved into the TCP version/port block. Added `DefaultTCPPortStr = "9092"` alongside it.
+  - **`dsn.go` hardcoded `"9092"`**: Both `parseJDBC` and `parseNative` used `Port: "9092"` instead of the protocol constant. Changed to `DefaultTCPPortStr`.
+  - **`ReadString` doc comment backwards**: "Use `ReadStringPtr` for a `*string` return" was wrong — `ReadString` already returns `*string`; `ReadStringPtr` returns `string`. Fixed to clarify the null-vs-empty distinction.
+  - **Dead `utf16Valid` function and guard**: `utf16Valid` always returned `true`; the `if !utf16Valid(s)` guard in `WriteString` was unreachable dead code. Removed the function and the guard.
+  - **Per-code-unit I/O in `WriteString`/`ReadString`**: Both previously called `t.w.Write`/`io.ReadFull` once per UTF-16 code unit (2 bytes at a time). Replaced with a single batch operation in each direction.
+  - Verified: all 91 tests pass, `make lint` clean. ✅
 - **Status:** ✅ Done — 2026-07-08
 
 ---

@@ -86,6 +86,14 @@ func (t *Tr) WriteByte(x byte) error {
 	return t.w.WriteByte(x)
 }
 
+// checkReader returns an error when t was created write-only (no reader).
+func (t *Tr) checkReader() error {
+	if t.r == nil {
+		return errors.New("Tr: read on write-only transfer")
+	}
+	return nil
+}
+
 // WriteInt16 writes an int16 in big-endian byte order.
 func (t *Tr) WriteInt16(x int16) error {
 	if t.w == nil {
@@ -136,28 +144,18 @@ func (t *Tr) WriteString(s string) error {
 	if t.w == nil {
 		return errors.New("Tr: write on read-only transfer")
 	}
-	if !utf16Valid(s) {
-		// Java's DataOutputStream.writeChars uses char==code unit.
-		// This shouldn't happen for well-formed Go strings, but guard it.
-		return fmt.Errorf("Tr: string contains invalid UTF-16 surrogate: %q", s)
-	}
-	if s == "" {
-		return t.WriteInt32(0)
-	}
-
-	// Encode the string to UTF-16 code units.
+	// Encode to UTF-16 code units (non-BMP characters become surrogate pairs).
 	units := utf16Encode(s)
 	if err := t.WriteInt32(int32(len(units))); err != nil {
 		return err
 	}
-	var buf [2]byte
-	for _, u := range units {
-		binary.BigEndian.PutUint16(buf[:], u)
-		if _, err := t.w.Write(buf[:]); err != nil {
-			return err
-		}
+	// Encode all code units into a single byte slice and write in one call.
+	data := make([]byte, len(units)*2)
+	for i, u := range units {
+		binary.BigEndian.PutUint16(data[i*2:], u)
 	}
-	return nil
+	_, err := t.w.Write(data)
+	return err
 }
 
 // WriteNullString writes a null string marker (length -1).
@@ -199,11 +197,17 @@ func (t *Tr) ReadBool() (bool, error) {
 
 // ReadByte reads a single byte.
 func (t *Tr) ReadByte() (byte, error) {
+	if err := t.checkReader(); err != nil {
+		return 0, err
+	}
 	return t.r.ReadByte()
 }
 
 // ReadInt16 reads an int16 in big-endian byte order.
 func (t *Tr) ReadInt16() (int16, error) {
+	if err := t.checkReader(); err != nil {
+		return 0, err
+	}
 	var buf [2]byte
 	if _, err := io.ReadFull(t.r, buf[:]); err != nil {
 		return 0, err
@@ -213,6 +217,9 @@ func (t *Tr) ReadInt16() (int16, error) {
 
 // ReadInt32 reads an int32 in big-endian byte order.
 func (t *Tr) ReadInt32() (int32, error) {
+	if err := t.checkReader(); err != nil {
+		return 0, err
+	}
 	var buf [4]byte
 	if _, err := io.ReadFull(t.r, buf[:]); err != nil {
 		return 0, err
@@ -222,6 +229,9 @@ func (t *Tr) ReadInt32() (int32, error) {
 
 // ReadInt64 reads an int64 in big-endian byte order.
 func (t *Tr) ReadInt64() (int64, error) {
+	if err := t.checkReader(); err != nil {
+		return 0, err
+	}
 	var buf [8]byte
 	if _, err := io.ReadFull(t.r, buf[:]); err != nil {
 		return 0, err
@@ -247,9 +257,9 @@ func (t *Tr) ReadFloat64() (float64, error) {
 	return math.Float64frombits(uint64(v)), nil
 }
 
-// ReadString reads a string in H2 wire format. Returns empty string for zero
-// length and "" for non-null empty. Returns nil for a null marker (length -1).
-// Use ReadStringPtr for a *string return.
+// ReadString reads a string in H2 wire format. Returns a pointer to the decoded
+// string, or nil for a null marker (length -1). Use ReadStringPtr when null
+// should map to empty string rather than a nil pointer.
 func (t *Tr) ReadString() (*string, error) {
 	length, err := t.ReadInt32()
 	if err != nil {
@@ -266,14 +276,14 @@ func (t *Tr) ReadString() (*string, error) {
 		return nil, fmt.Errorf("Tr: negative string length %d", length)
 	}
 
-	// Read UTF-16 code units.
+	// Read all UTF-16 code units in a single call, then decode.
+	raw := make([]byte, int(length)*2)
+	if _, err := io.ReadFull(t.r, raw); err != nil {
+		return nil, err
+	}
 	units := make([]uint16, length)
-	var buf [2]byte
 	for i := int32(0); i < length; i++ {
-		if _, err := io.ReadFull(t.r, buf[:]); err != nil {
-			return nil, err
-		}
-		units[i] = binary.BigEndian.Uint16(buf[:])
+		units[i] = binary.BigEndian.Uint16(raw[i*2:])
 	}
 	s := utf16Decode(units)
 	return &s, nil
@@ -321,17 +331,6 @@ func (t *Tr) ReadRowCount() (int64, error) {
 }
 
 // ---- UTF-16 encoding helpers ----
-
-// utf16Valid reports whether s contains valid UTF-8 that can be round-tripped
-// through UTF-16 (any valid Go string is valid; isolated surrogates in Go
-// strings would cause issues).
-func utf16Valid(_ string) bool {
-	// Go strings are valid UTF-8 by construction unless they contain
-	// malformed runes. For driver purposes, we accept standard UTF-8;
-	// if we ever need to handle arbitrary byte sequences we can use
-	// UTF-16BE directly, but that's not needed for typical SQL strings.
-	return true
-}
 
 // utf16Encode encodes a Go string into a []uint16 of UTF-16 code units.
 // Non-BMP characters (surrogate pairs) are encoded as two code units.
