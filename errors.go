@@ -23,19 +23,37 @@ func (e *H2Error) Error() string {
 }
 
 // readH2Error reads a STATUS_ERROR response from the H2 server.
-// Wire format (Java readSQLException):
+// Wire format (Java SessionRemote.readSQLException):
 //
 //	sqlState   (string)
 //	message    (string)
 //	sql        (string, may be null)
 //	errorCode  (int32)
 //	stackTrace (string)
+//
+// If any field cannot be read (e.g. connection dropped mid-response) the I/O
+// error is returned directly instead of a partial H2Error.
 func readH2Error(tr *Tr) error {
-	sqlState, _ := tr.ReadString()
-	message, _ := tr.ReadString()
-	sql, _ := tr.ReadString()
-	errorCode, _ := tr.ReadInt32()
-	stackTrace, _ := tr.ReadString()
+	sqlState, err := tr.ReadString()
+	if err != nil {
+		return fmt.Errorf("h2go: read error response (sqlState): %w", err)
+	}
+	message, err := tr.ReadString()
+	if err != nil {
+		return fmt.Errorf("h2go: read error response (message): %w", err)
+	}
+	sql, err := tr.ReadString()
+	if err != nil {
+		return fmt.Errorf("h2go: read error response (sql): %w", err)
+	}
+	errorCode, err := tr.ReadInt32()
+	if err != nil {
+		return fmt.Errorf("h2go: read error response (errorCode): %w", err)
+	}
+	stackTrace, err := tr.ReadString()
+	if err != nil {
+		return fmt.Errorf("h2go: read error response (stackTrace): %w", err)
+	}
 	return &H2Error{
 		SQLState:   derefStr(sqlState),
 		Message:    derefStr(message),

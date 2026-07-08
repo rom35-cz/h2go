@@ -8,23 +8,33 @@ import (
 )
 
 // mockServer starts a TCP listener on a random local port, runs serverFn in a
-// goroutine for each accepted connection, and returns the listener address and
-// a cleanup function.
-func mockServer(t *testing.T, serverFn func(net.Conn)) (addr string, cleanup func()) {
+// goroutine for each accepted connection, and registers a cleanup that waits
+// for the goroutine to finish before the test ends.
+//
+// Using t.Cleanup + a done channel ensures that any t.Errorf / t.Logf calls
+// inside serverFn complete before the test is marked finished, preventing
+// the "testing: t.Errorf called after test finished" panic.
+func mockServer(t *testing.T, serverFn func(net.Conn)) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		conn, err := ln.Accept()
 		if err != nil {
-			return
+			return // listener closed before a connection arrived
 		}
 		defer conn.Close()
 		serverFn(conn)
 	}()
-	return ln.Addr().String(), func() { ln.Close() }
+	t.Cleanup(func() {
+		ln.Close() // unblock Accept if the goroutine is still waiting
+		<-done     // wait for serverFn to return before the test ends
+	})
+	return ln.Addr().String()
 }
 
 func parseAddr(t *testing.T, addr string) (host, port string) {
@@ -37,7 +47,7 @@ func parseAddr(t *testing.T, addr string) (host, port string) {
 }
 
 func TestHandshake_Success(t *testing.T) {
-	addr, cleanup := mockServer(t, func(serverConn net.Conn) {
+	addr := mockServer(t, func(serverConn net.Conn) {
 		tr := NewReadWriter(serverConn)
 
 		// Read initial handshake.
@@ -96,7 +106,6 @@ func TestHandshake_Success(t *testing.T) {
 		tr.WriteBool(true)
 		tr.Flush()
 	})
-	defer cleanup()
 
 	host, port := parseAddr(t, addr)
 	cfg := &Config{
@@ -112,6 +121,7 @@ func TestHandshake_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handshake failed: %v", err)
 	}
+	defer sess.Close()
 
 	if sess.version != TCPProtocolVersion21 {
 		t.Errorf("version = %d, want %d", sess.version, TCPProtocolVersion21)
@@ -125,7 +135,7 @@ func TestHandshake_Success(t *testing.T) {
 }
 
 func TestHandshake_VersionMismatch(t *testing.T) {
-	addr, cleanup := mockServer(t, func(serverConn net.Conn) {
+	addr := mockServer(t, func(serverConn net.Conn) {
 		tr := NewReadWriter(serverConn)
 		// Read and discard initial handshake.
 		tr.ReadInt32()
@@ -142,7 +152,6 @@ func TestHandshake_VersionMismatch(t *testing.T) {
 		tr.WriteInt32(20)
 		tr.Flush()
 	})
-	defer cleanup()
 
 	host, port := parseAddr(t, addr)
 	cfg := &Config{
@@ -163,7 +172,7 @@ func TestHandshake_VersionMismatch(t *testing.T) {
 }
 
 func TestHandshake_AuthError(t *testing.T) {
-	addr, cleanup := mockServer(t, func(serverConn net.Conn) {
+	addr := mockServer(t, func(serverConn net.Conn) {
 		tr := NewReadWriter(serverConn)
 		// Read and discard initial handshake.
 		tr.ReadInt32()
@@ -184,7 +193,6 @@ func TestHandshake_AuthError(t *testing.T) {
 		tr.WriteString("stack trace")
 		tr.Flush()
 	})
-	defer cleanup()
 
 	host, port := parseAddr(t, addr)
 	cfg := &Config{
@@ -215,7 +223,7 @@ func TestHandshake_AuthError(t *testing.T) {
 }
 
 func TestHandshake_ErrorAfterSessionSetID(t *testing.T) {
-	addr, cleanup := mockServer(t, func(serverConn net.Conn) {
+	addr := mockServer(t, func(serverConn net.Conn) {
 		tr := NewReadWriter(serverConn)
 		// Read initial handshake.
 		tr.ReadInt32()
@@ -245,7 +253,6 @@ func TestHandshake_ErrorAfterSessionSetID(t *testing.T) {
 		tr.WriteString(":java.lang.Throwable")
 		tr.Flush()
 	})
-	defer cleanup()
 
 	host, port := parseAddr(t, addr)
 	cfg := &Config{
@@ -270,7 +277,7 @@ func TestHandshake_ErrorAfterSessionSetID(t *testing.T) {
 }
 
 func TestHandshake_CorrectUserNameUppercasingOnWire(t *testing.T) {
-	addr, cleanup := mockServer(t, func(serverConn net.Conn) {
+	addr := mockServer(t, func(serverConn net.Conn) {
 		tr := NewReadWriter(serverConn)
 		tr.ReadInt32()
 		tr.ReadInt32()
@@ -296,7 +303,6 @@ func TestHandshake_CorrectUserNameUppercasingOnWire(t *testing.T) {
 		tr.WriteBool(false)
 		tr.Flush()
 	})
-	defer cleanup()
 
 	host, port := parseAddr(t, addr)
 	cfg := &Config{
@@ -311,9 +317,7 @@ func TestHandshake_CorrectUserNameUppercasingOnWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handshake failed: %v", err)
 	}
-	if sess == nil {
-		t.Fatal("expected non-nil session")
-	}
+	defer sess.Close()
 }
 
 func TestGenerateSessionID(t *testing.T) {

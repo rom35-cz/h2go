@@ -83,15 +83,15 @@ func Handshake(cfg *Config) (*Session, error) {
 
 	if err := tr.WriteInt32(SessionSetID); err != nil {
 		_ = tr.Close()
-		return nil, err
+		return nil, fmt.Errorf("h2go: write session set id op: %w", err)
 	}
 	if err := tr.WriteString(sessionID); err != nil {
 		_ = tr.Close()
-		return nil, err
+		return nil, fmt.Errorf("h2go: write session id: %w", err)
 	}
 	if err := tr.WriteString(localTimeZoneID()); err != nil {
 		_ = tr.Close()
-		return nil, err
+		return nil, fmt.Errorf("h2go: write timezone id: %w", err)
 	}
 	if err := tr.Flush(); err != nil {
 		_ = tr.Close()

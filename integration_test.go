@@ -91,9 +91,6 @@ func TestIntegration_Handshake(t *testing.T) {
 		}
 	}()
 
-	if sess == nil {
-		t.Fatal("expected non-nil session")
-	}
 	if sess.version != TCPProtocolVersion21 {
 		t.Errorf("version = %d, want %d", sess.version, TCPProtocolVersion21)
 	}
