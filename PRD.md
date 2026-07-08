@@ -557,14 +557,27 @@ JDBC_PASSWORD
 
 from `h2-data/.env` or equivalent environment variables.
 
-### 9.2 CI target
+### 9.2 Local build system target
 
-CI should run against:
+The project uses a **local build system driven by a `Makefile`**. There is no remote CI pipeline; all build, vet, lint, and test steps run on the developer's local machine.
+
+The `Makefile` must provide targets covering at least:
+
+- `build` — `go build ./...`
+- `vet` — `go vet ./...`
+- `lint` — local linter run (for example `golangci-lint`) when installed
+- `test` — unit tests (`go test ./...`)
+- `test-race` — unit tests under `-race`
+- `test-integration` — integration tests (`-tags integration`) against a locally running H2 server
+
+Local integration builds and tests should run against:
 
 - H2 **2.4.240**
 - Later H2 versions only when explicitly supported
 
-CI should not run compatibility jobs for older H2 versions.
+The local build system should not run compatibility jobs for older H2 versions.
+
+Integration targets should use the local `h2-data` environment and skip cleanly when the H2 server or required env vars are unavailable.
 
 ### 9.3 Required test categories
 
@@ -658,7 +671,7 @@ The MVP should include:
 - Generated key support for single numeric `LastInsertId()` values.
 - Error decoding.
 - Local integration tests.
-- CI against H2 2.4.240.
+- Local `Makefile` build system targeting H2 2.4.240.
 
 ### 11.2 Post-MVP enhancements
 

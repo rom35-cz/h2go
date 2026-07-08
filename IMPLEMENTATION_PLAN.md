@@ -31,18 +31,27 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Add `README.md` (short: purpose, H2 2.4.240+/protocol 21 scope, status "under development").
   - Add `.gitignore` (Go template + `.env`, `*.mv.db`, `*.trace.db`).
   - Do **not** add a placeholder license. Add `LICENSE` only when the project license is explicitly decided before public release.
-  - Add `Makefile` or `taskfile` targets: `build`, `vet`, `test`, `test-race`, `test-integration`.
+  - Add a `Makefile` with targets: `build`, `vet`, `lint`, `test`, `test-race`, `test-integration`.
 - **Deliverables:** `go.mod`, `doc.go`, `README.md`, `.gitignore`, build tooling.
 - **Done when:** `go build ./...`, `go vet ./...`, and `go test ./...` pass; module path is `github.com/rom35-cz/h2go`.
+- **Implementation notes:**
+  - The `.gitignore` already existed from an earlier project setup pass; it was kept as-is.
+  - `go.mod`: set `go 1.22` (the plan requires ≥ 1.22; the host toolchain is Go 1.26.4 which is fully compatible).
+  - `doc.go`: package doc covers quick-start, DSN formats, and under-development status.
+  - `README.md`: concise with table of DSN formats, scope, and license note.
+  - `Makefile` and `.golangci.yml` were created here (T0.1 + T0.2 merged) so tooling is complete from the start.
+  - Verified: `go build ./...`, `go vet ./...`, `go test ./...` all pass. ✅
+- **Status:** ✅ Done — 2026-07-08
 
-### T0.2 CI pipeline skeleton
-- **Goal:** CI runs build/vet/unit tests on every push.
+### T0.2 Local build system (Makefile)
+- **Goal:** Local `Makefile` runs build/vet/lint/unit tests on demand.
 - **Work:**
-  - GitHub Actions workflow: matrix on Go stable; steps `go build`, `go vet`, `go test -race ./...`.
-  - Add a **separate, opt-in** integration job that boots H2 2.4.240 from an explicit downloaded artifact (for example Maven Central / project cache) and runs `-tags integration` tests with non-secret CI test credentials. Do not depend on the local `h2-data` directory in CI. No older-H2 jobs (per PRD §9.2).
-  - Add `golangci-lint` config (govet, staticcheck, errcheck, ineffassign, revive minimal).
-- **Deliverables:** `.github/workflows/ci.yml`, `.golangci.yml`.
-- **Done when:** CI config is valid and unit job is green.
+  - Author a `Makefile` with targets: `build` (`go build ./...`), `vet` (`go vet ./...`), `lint`, `test` (`go test ./...`), `test-race` (`go test -race ./...`), and `test-integration` (`-tags integration`).
+  - The `test-integration` target uses the local `h2-data` environment and must skip cleanly when H2 is not running or env vars are unset. No older-H2 targets (per PRD §9.2).
+  - Add `golangci-lint` config (govet, staticcheck, errcheck, ineffassign, revive minimal) invoked from the `lint` target when the tool is installed locally.
+  - There is **no remote CI pipeline**; all steps run on the local machine.
+- **Deliverables:** `Makefile`, `.golangci.yml`.
+- **Done when:** `make build`, `make vet`, and `make test` succeed locally.
 
 ---
 
@@ -315,7 +324,7 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
 - **Work:**
   - Fill gaps: DSN parsing, password hashing, handshake, unsupported-version, Ping, SELECT 1, query/exec ±params, prepared, stmt/rows close, tx commit/rollback, pool reuse, session reset, scalar round-trips, error decoding, context cancel, `-race`.
   - Add a small connection-pool stress test and a scalar round-trip table test.
-- **Deliverables:** complete `*_test.go` set; CI integration job green.
+- **Deliverables:** complete `*_test.go` set; `make test-integration` green locally.
 - **Done when:** All categories present and passing under `-race` with H2 running.
 
 ### T12.2 Acceptance-criteria verification
@@ -341,7 +350,7 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Verify MVP scope (PRD §11.1) complete; finalize `CHANGELOG.md`; ensure `go vet`, lint, unit+integration all green.
   - Tag `v0.1.0`.
 - **Deliverables:** `CHANGELOG.md`, git tag.
-- **Done when:** Tagged release; CI green; MVP acceptance criteria satisfied.
+- **Done when:** Tagged release; local `make` targets green; MVP acceptance criteria satisfied.
 
 ---
 
@@ -359,7 +368,7 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
 
 | Phase | PRD sections |
 |---|---|
-| 0 | §7.1, §8.1, §9.2 |
+| 0 | §7.1, §8.1, §9.2 (local build system) |
 | 1 | §7.2 |
 | 2 | §7.3 (framing), §7.14 (codes) |
 | 3 | §7.3, §8.2 |
