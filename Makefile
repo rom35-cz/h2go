@@ -1,4 +1,4 @@
-.PHONY: build vet lint test test-race test-integration clean
+.PHONY: build vet lint test test-race test-integration db-seed clean
 
 build:
 	go build ./...
@@ -28,3 +28,14 @@ test-integration:
 clean:
 	go clean ./...
 	rm -f coverage.out
+
+## db-seed: (re)apply h2-data/seed.sql to the running H2 instance.
+## The server must be running first: cd h2-data && ./h2.sh
+db-seed:
+	@set -a; . h2-data/.env; set +a; \
+	java -cp h2-data/h2-2.4.240.jar org.h2.tools.RunScript \
+	  -url "$$JDBC_URL" \
+	  -user "$$JDBC_USER" \
+	  -password "$$JDBC_PASSWORD" \
+	  -script h2-data/seed.sql \
+	  -showResults
