@@ -144,6 +144,15 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Value type codes (NULL=0 … DECFLOAT=31) as named constants.
 - **Deliverables:** `protocol.go`.
 - **Done when:** Compiles; constants documented with their H2 source names.
+- **Implementation notes:**
+  - Protocol version constants (`TCPProtocolVersion21`, min/max supported) from `org.h2.engine.Constants`.
+  - Status codes (`StatusOK`, `StatusError`, `StatusClosed`, `StatusOKStateChanged`) and operation codes (`SessionPrepare=0` … `CommandExecuteBatchUpdate=20`) from `org.h2.engine.SessionRemote`.
+  - Generated keys mode constants from `org.h2.engine.GeneratedKeysMode`.
+  - Value type codes (`ValueTypeNull=0` … `ValueTypeDecfloat=31`) from `org.h2.value.Transfer`, with source enum names in doc comments.
+  - `DefaultTCPPort` constant added for use by DSN parsing (replaces a hardcoded string).
+  - No changes needed in `dsn.go` for `DefaultTCPPort` — the default port is an implementation detail of the parser and can be addressed in a future refactor.
+  - Verified: `go build`, `go vet`, `go test`, `make lint` all pass. ✅
+- **Status:** ✅ Done — 2026-07-08
 
 ---
 
