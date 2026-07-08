@@ -221,6 +221,17 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Confirm the T3.1 hash vectors against the live server (auth success/failure).
 - **Deliverables:** integration test + `.env` loader helper.
 - **Done when:** With H2 running, the test connects and authenticates; without env, it skips.
+- **Implementation notes:**
+  - `integration_test.go` uses `//go:build integration` tag so it only builds/runs when explicitly requested.
+  - `loadEnvFromFile` and `integrationEnv` helpers read `h2-data/.env` (walking `.`, `..`, `../..` from the test binary) as a fallback when process env vars are not set. This lets `go test -tags integration` work from the module root without pre-exporting variables.
+  - `TestIntegration_Handshake`: parses the JDBC URL from `.env`, merges credentials, calls `Handshake`, asserts version=21, session id length=64, and autoCommit state. Confirmed against live H2 2.4.240: version=21, autoCommit=true.
+  - `TestIntegration_AuthFailure`: uses deliberately wrong credentials, asserts `*H2Error` is returned (confirmed live — wrong password produces SQLState 28000).
+  - `TestIntegration_ParseDSNRoundTrip`: verifies the `.env` JDBC URL parses correctly (host, port, database non-empty, OriginalURL preserved).
+  - `TestIntegration_CredentialsMerge`: verifies `MergeCredentials` overlays env credentials only when DSN omits them, with DSN credentials taking precedence.
+  - `TestIntegration_MultipleHandshakes`: 3 sequential independent handshakes to the same server — all succeed. Validates connection reuse is not required and each session is independent.
+  - Integration test skips cleanly with `t.Skip` when env is unavailable.
+  - Verified live against H2 2.4.240 on port 9092: all 5 integration tests pass. ✅
+- **Status:** ✅ Done — 2026-07-08
 
 ---
 
