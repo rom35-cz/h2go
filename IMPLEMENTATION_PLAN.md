@@ -173,6 +173,15 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Use the Go standard library (`unicode/utf16` plus explicit big-endian encoding) or a small original helper; document the exact Java UTF-16 code-unit byte layout.
 - **Deliverables:** `auth.go`, `auth_test.go` with known-answer vectors (cross-checked against a live H2 login in T3.3).
 - **Done when:** Deterministic hash output; unit tests pin the byte layout.
+- **Implementation notes:**
+  - `auth.go` provides three functions: `userPasswordHash`, `filePasswordHash`, and the internal `keyPasswordHash`.
+  - `keyPasswordHash` mirrors `SHA256.getKeyPasswordHash` exactly: it concatenates `userName + "@" + password`, encodes as UTF-16 code units via `unicode/utf16.Encode`, serialises each code unit in big-endian order (`byte(c>>8), byte(c)`), and takes SHA-256.
+  - `userPasswordHash` uppercases the user name with Go's `strings.ToUpper` before calling `keyPasswordHash`. This matches Java's `toUpperCase(Locale.ENGLISH)` for ASCII; documented in the doc comment. Returns a zero-length slice for empty user + empty password (matching H2's `hashPassword` fast path).
+  - `filePasswordHash` returns nil for empty file passwords. For non-empty passwords it calls `keyPasswordHash("file", filePassword)` — **the "file" prefix is deliberately not uppercased**, matching Java's `ConnectionInfo.convertPasswords` which passes literal `"file"` to `hashPassword` without going through `setUserName`.
+  - `auth_test.go` contains 14 tests: 8 user-password tests (empty, 5 golden vectors, uppercase normalisation, different passwords, length, deterministic), 5 file-password tests (empty→nil, 2 golden vectors, not-uppercased, deterministic), and 1 byte-layout test that verifies the raw UTF16-BE encoding of `"SA@"` before hashing.
+  - Test count: 105 total (32 DSN + 57 Transfer + 14 Auth + 2 error tests). All pass.
+  - Verified: `go build`, `go vet`, `go test`, `make lint` all pass. ✅
+- **Status:** ✅ Done — 2026-07-08
 
 ### T3.2 Handshake exchange
 - **Goal:** Establish an authenticated session over TCP for protocol 21.
