@@ -75,6 +75,16 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Reject non-`tcp` H2 URLs (`mem:`, `file:`, `ssl:`) with clear errors.
 - **Deliverables:** `dsn.go`, `dsn_test.go`.
 - **Done when:** Unit tests cover host/port/db/semicolon-param extraction, the `h2-go` name rule, default port, and rejection cases.
+- **Implementation notes:**
+  - `ParseDSN` strips `jdbc:h2:` prefix, validates the inner protocol is `tcp:`, then delegates to `url.Parse` for host/port/path extraction.
+  - The path is split on `;` — first segment is the database name (leading `/` stripped via `strings.TrimPrefix`), remaining segments are key=value parameters.
+  - `USER` and `PASSWORD` parameters are extracted case-insensitively using `strings.EqualFold`.
+  - Port defaults to "9092". Invalid (non-numeric) ports and missing hosts return clear errors.
+  - `staticcheck` S1017 flagged a conditional string prefix check; replaced with unconditional `strings.TrimPrefix`.
+  - `gofmt` flagged missing trailing newline; fixed with `gofmt -w`.
+  - 12 tests cover: basic parse, default port, semicolon params with credentials, database-name rule, empty DSN, unsupported modes (mem/file/ssl/unknown), missing host, invalid port, multiple params, param without value, nested database path, case-insensitive USER/PASSWORD.
+  - Verified: `go build ./...`, `go vet ./...`, `go test ./...`, `make lint` all pass. ✅
+- **Status:** ✅ Done — 2026-07-08
 
 ### T1.2 Native Go DSN parser + credential merge
 - **Goal:** Support `h2://` / `h2+tcp://` DSNs and separate credential injection.
