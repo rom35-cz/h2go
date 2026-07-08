@@ -1,0 +1,33 @@
+# OS/editor
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Go build/test artifacts
+/bin/
+/dist/
+/coverage.out
+/*.test
+*.prof
+
+# Environment and secrets
+.env
+*.env
+h2-data/.env
+
+# Local H2 database state
+*.mv.db
+*.trace.db
+*.lock.db
+h2-data/data/
+
+# Local H2 binary/source/reference artifacts
+h2-data/*.jar
+h2-src/
+h2-source/
+h2-sources/
+h2database/
+
+# Logs
+*.log
