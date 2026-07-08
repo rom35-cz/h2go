@@ -303,6 +303,23 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - `TypeInfo` decoder for protocol 21 (modern encoding).
 - **Deliverables:** `command.go`, `typeinfo.go`, `metadata.go`, unit tests against recorded frames.
 - **Done when:** Preparation and metadata parsing are verified with scripted server bytes for representative parameter and result types.
+- **Implementation notes:**
+  - `typeinfo.go`: `TypeInfo` struct captures H2 column/parameter type metadata: `ValueType` (from protocol constants), `Precision`, `Scale`, `Nullable`, and `ExtTypeInfo` for complex types (ARRAY element type). Protocol-21 `ReadTypeInfo()` decoder handles all 25+ MVP types with correct precision/scale reading per type category:
+    - Simple types (NULL, BOOLEAN, integer types, DATE, UUID): no additional fields.
+    - String/binary types (CHAR, VARCHAR, BINARY, etc.): read int32 precision.
+    - LOB types (BLOB, CLOB): read int64 precision.
+    - NUMERIC: read int32 precision, int32 scale, boolean has-ext-flag.
+    - Floating point (REAL, DOUBLE): read byte precision (-1 = default).
+    - Time/timestamp types: read byte scale (fractional seconds precision).
+    - ARRAY: read precision + recursive element type info.
+    - Complex types (ENUM, GEOMETRY, ROW): ext type info parsed/skipped for MVP.
+  - `metadata.go`: `ResultColumn` and `ResultMeta` structs for result set metadata. `ReadResultMeta()` reads alias, schema, table, column name, TypeInfo, identity flag, and nullable. Handles protocol < 20 displaySize skip. Helper methods: `ColumnNames()`, `GetColumn()`, `GetColumnByName()`.
+  - `command.go`: `PreparedCommand` struct holds command ID, SQL, IsQuery, ReadOnly, CmdType, ParamCount, and Params slice. `Session.PrepareCommand()` sends `SESSION_PREPARE` (op=0) and reads isQuery/readOnly/paramCount. `Session.PrepareCommandReadParams()` sends `SESSION_PREPARE_READ_PARAMS2` (op=18) and additionally reads cmdType and per-parameter TypeInfo+nullable. `PreparedCommand.Close()` sends `COMMAND_CLOSE` to release server-side command. Added `nextCommandID()` with mutex for thread-safe ID generation. Command type constants (CmdSelect=1, CmdInsert=2, etc.) from CommandRemote.
+  - `session.go`: Added `mu sync.Mutex` and `nextID int32` for command ID generation.
+  - `protocol.go`: Added `TCPProtocolVersion20 = 20` constant for protocol version checks.
+  - Test coverage: `typeinfo_test.go` (8 tests for TypeInfo reading of various types), `command_test.go` (8 tests for command structures and ID generation), `metadata_test.go` (10 tests for result metadata reading). Total tests: 211 (previous 185 + 26 new). All pass with `-race`.
+  - Verified: `go build ./...`, `go vet ./...`, `make lint` (0 issues), `go test -race`, `make test-integration` (8 integration tests pass against H2 2.4.240). ✅
+- **Status:** ✅ Done — 2026-07-08
 
 ### T5.2 Rows: fetch, decode scalars, close
 - **Goal:** Execute a query and stream rows into `driver.Rows`.

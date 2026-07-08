@@ -1,11 +1,15 @@
 package h2go
 
+import "sync"
+
 // Session holds an authenticated H2 TCP session.
 type Session struct {
 	tr         *Tr
 	id         string
 	version    int32
 	autoCommit bool
+	mu         sync.Mutex // protects nextID
+	nextID     int32      // incremented for each command ID
 }
 
 // Close sends a graceful SESSION_CLOSE notification to the server and closes

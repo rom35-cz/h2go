@@ -2,6 +2,10 @@ package h2go
 
 // TCP protocol version and port constants.
 const (
+	// TCPProtocolVersion20 is the previous TCP protocol version.
+	// Used for conditional wire format differences.
+	TCPProtocolVersion20 = 20
+
 	// TCPProtocolVersion21 is the native TCP protocol version used by this
 	// driver. Only protocol 21 is supported.
 	TCPProtocolVersion21 = 21
