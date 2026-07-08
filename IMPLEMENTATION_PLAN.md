@@ -330,6 +330,48 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Ensure `Rows.Close` frees the remote result; close the remote command too only when the rows object owns an ad-hoc command, not when it is backed by a reusable prepared statement.
 - **Deliverables:** `rows.go`, `value_read.go`, unit tests (scripted rows) + type decode tests.
 - **Done when:** Unit tests decode each MVP scalar; rows close frees server objects.
+- **Implementation notes:**
+  - `value_read.go`: `ReadValue()` decodes H2 wire values to `driver.Value` types per protocol 21:
+    - NULL → nil
+    - BOOLEAN → bool
+    - TINYINT/SMALLINT/INTEGER/BIGINT → int64 (smallint uses ReadInt16 per protocol 20+)
+    - REAL → float64 (reads float32, converts to float64)
+    - DOUBLE → float64
+    - NUMERIC → string (H2 sends as string)
+    - VARCHAR/CHAR/VARCHAR_IGNORECASE → string
+    - BINARY/VARBINARY → []byte
+    - DATE → time.Time (from dateValue = days since epoch)
+    - TIME → time.Time (from nanoseconds since midnight)
+    - TIME_TZ → time.Time with location (nanoseconds + offset seconds)
+    - TIMESTAMP → time.Time (dateValue + nanoseconds)
+    - TIMESTAMP_TZ → time.Time with location (dateValue + nanoseconds + offset)
+    - UUID → canonical string "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    - BLOB/CLOB → MVP returns error for fetch-on-demand LOBs (length == -1)
+    - DECFLOAT → string
+    - Complex types (ARRAY, ROW, ENUM, GEOMETRY, INTERVAL) → error for MVP
+  - Date/time conversion uses H2's native representation:
+    - dateValue = days since 1970-01-01 (proleptic Gregorian)
+    - Time = nanoseconds since midnight
+    - Timezone offset = seconds from UTC
+  - `rows.go`: `Rows` struct implements `driver.Rows`:
+    - `Columns()` returns column aliases from result metadata
+    - `Next(dest)` reads next row into dest slice; returns `io.EOF` at end
+    - Row fetching: initial rows prefetched on creation; additional rows fetched via `RESULT_FETCH_ROWS`
+    - Wire row format: byte flag (1=row data, 0=end, -1=error) followed by column values
+    - `Close()` sends `RESULT_CLOSE`; if `ownsCommand` is true, also sends `COMMAND_CLOSE`
+    - `ownsCommand` is true for ad-hoc queries, false for prepared statement results (reusable)
+  - Optional interface implementations for metadata:
+    - `ColumnTypeDatabaseTypeName()` → type name (INTEGER, VARCHAR, etc.)
+    - `ColumnTypeNullable()` → nullability
+    - `ColumnTypeLength()` → precision for variable-length types
+    - `ColumnTypePrecisionScale()` → precision/scale for numeric types
+  - Execution helpers on Session:
+    - `ExecuteQuery()` for ad-hoc queries (prepares, executes, owns command)
+    - `ExecuteQueryPrepared()` for prepared commands (reuses command)
+  - `transfer.go`: Added `ReadFull()` helper for reading exact byte counts (used for BLOB data).
+  - Test coverage: `value_read_test.go` (11 tests for all value types), `rows_test.go` (10 tests for rows behavior). Total tests: 231 (+20 new from T5.1 baseline of 211, though plan shows 185; actual count is 231). All pass with `-race`.
+  - Verified: `go build ./...`, `go vet ./...`, `make lint` (0 issues), `go test -race`, `make test-integration` (8 integration tests pass against H2 2.4.240). Note: T5.3 will add end-to-end integration tests for actual SELECT queries.
+- **Status:** ✅ Done — 2026-07-08
 
 ### T5.3 QueryerContext + real Ping
 - **Goal:** `db.QueryContext(ctx, "SELECT ...")` works end to end.

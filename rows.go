@@ -1,0 +1,508 @@
+// rows.go — driver.Rows implementation for H2 result sets.
+//
+// Reference: org.h2.result.ResultRemote, driver.Rows interface
+
+package h2go
+
+import (
+	"context"
+	"database/sql/driver"
+	"fmt"
+	"io"
+)
+
+// Rows implements driver.Rows for H2 result sets.
+type Rows struct {
+	// session is the underlying H2 session.
+	session *Session
+
+	// resultID is the server-side result set identifier.
+	resultID int32
+
+	// columnCount is the number of columns in the result.
+	columnCount int32
+
+	// columns contains the result column metadata.
+	columns *ResultMeta
+
+	// rowCount is the total number of rows (-1 for lazy/large results).
+	rowCount int64
+
+	// currentRow is the current row data.
+	currentRow []driver.Value
+
+	// rowOffset is the index of the first row in the buffered rows.
+	rowOffset int64
+
+	// bufferedRows holds prefetched rows.
+	bufferedRows [][]driver.Value
+
+	// fetchSize is the number of rows to fetch per request.
+	fetchSize int
+
+	// closed indicates if the result set has been closed.
+	closed bool
+
+	// ownsCommand indicates if this Rows owns the command and should close it.
+	// True for ad-hoc queries, false for prepared statement results.
+	ownsCommand bool
+
+	// commandID is the owning command ID (for closing if ownsCommand is true).
+	commandID int32
+
+	// err holds any error that occurred during operation.
+	err error
+}
+
+// NewRows creates a new Rows instance for reading query results.
+// This is called after COMMAND_EXECUTE_QUERY returns the column count.
+// The columnCount is already read; this function reads the row count and column metadata.
+func NewRows(session *Session, resultID int32, columnCount int32, fetchSize int, ownsCommand bool, commandID int32) (*Rows, error) {
+	if session == nil || session.tr == nil {
+		return nil, fmt.Errorf("h2go: NewRows: nil session or closed transport")
+	}
+
+	r := &Rows{
+		session:     session,
+		resultID:    resultID,
+		columnCount: columnCount,
+		fetchSize:   fetchSize,
+		rowCount:    -1, // Will be read from stream
+		ownsCommand: ownsCommand,
+		commandID:   commandID,
+	}
+
+	// Read row count
+	rowCount, err := session.tr.ReadInt64()
+	if err != nil {
+		return nil, fmt.Errorf("h2go: NewRows: failed to read row count: %w", err)
+	}
+	r.rowCount = rowCount
+
+	// Read column metadata
+	meta, err := session.tr.ReadResultMeta(columnCount, TCPProtocolVersion21)
+	if err != nil {
+		return nil, fmt.Errorf("h2go: NewRows: failed to read column metadata: %w", err)
+	}
+	r.columns = meta
+
+	// Prefetch initial rows
+	if err := r.prefetchInitialRows(); err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
+// prefetchInitialRows reads the initial batch of rows.
+func (r *Rows) prefetchInitialRows() error {
+	// Determine how many rows to fetch initially
+	fetch := r.fetchSize
+	if r.rowCount >= 0 && int64(fetch) > r.rowCount {
+		fetch = int(r.rowCount)
+	}
+
+	if fetch > 0 {
+		if err := r.fetchRows(fetch); err != nil {
+			return fmt.Errorf("h2go: prefetchInitialRows: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Columns returns the column names.
+// This implements driver.Rows.Columns.
+func (r *Rows) Columns() []string {
+	if r.columns == nil {
+		return nil
+	}
+	return r.columns.ColumnNames()
+}
+
+// Close closes the result set and frees server resources.
+// This implements driver.Rows.Close.
+//
+// If this Rows owns the command (ad-hoc query), the command is also closed.
+// If the result set is backed by a prepared statement, only the result is closed.
+func (r *Rows) Close() error {
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+
+	var closeErr error
+
+	// Close the result on the server
+	if r.session != nil && r.session.tr != nil {
+		if err := r.sendResultClose(); err != nil {
+			closeErr = err
+		}
+	}
+
+	// If we own the command, close it too (for ad-hoc queries)
+	if r.ownsCommand && r.commandID != 0 && r.session != nil && r.session.tr != nil {
+		if err := r.sendCommandClose(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+
+	// Clear references
+	r.bufferedRows = nil
+	r.currentRow = nil
+	r.columns = nil
+
+	return closeErr
+}
+
+// sendResultClose sends RESULT_CLOSE to the server.
+func (r *Rows) sendResultClose() error {
+	if err := r.session.tr.WriteInt32(ResultClose); err != nil {
+		return fmt.Errorf("h2go: Rows.sendResultClose: failed to write op: %w", err)
+	}
+	if err := r.session.tr.WriteInt32(r.resultID); err != nil {
+		return fmt.Errorf("h2go: Rows.sendResultClose: failed to write result id: %w", err)
+	}
+	if err := r.session.tr.Flush(); err != nil {
+		return fmt.Errorf("h2go: Rows.sendResultClose: flush failed: %w", err)
+	}
+	return nil
+}
+
+// sendCommandClose sends COMMAND_CLOSE to the server.
+func (r *Rows) sendCommandClose() error {
+	if err := r.session.tr.WriteInt32(CommandClose); err != nil {
+		return fmt.Errorf("h2go: Rows.sendCommandClose: failed to write op: %w", err)
+	}
+	if err := r.session.tr.WriteInt32(r.commandID); err != nil {
+		return fmt.Errorf("h2go: Rows.sendCommandClose: failed to write command id: %w", err)
+	}
+	if err := r.session.tr.Flush(); err != nil {
+		return fmt.Errorf("h2go: Rows.sendCommandClose: flush failed: %w", err)
+	}
+	return nil
+}
+
+// Next reads the next row into dest.
+// This implements driver.Rows.Next.
+// Returns io.EOF when there are no more rows.
+func (r *Rows) Next(dest []driver.Value) error {
+	if r.closed {
+		return driver.ErrBadConn
+	}
+	if r.err != nil {
+		return r.err
+	}
+
+	// Ensure dest is the right length
+	if len(dest) != int(r.columnCount) {
+		return fmt.Errorf("h2go: Rows.Next: dest length %d does not match column count %d",
+			len(dest), r.columnCount)
+	}
+
+	// Check if we need to fetch more rows
+	if len(r.bufferedRows) == 0 {
+		if r.rowCount >= 0 && r.rowOffset >= r.rowCount {
+			return io.EOF
+		}
+
+		// Need to fetch more rows
+		fetch := r.fetchSize
+		if r.rowCount >= 0 {
+			remaining := r.rowCount - r.rowOffset
+			if remaining <= 0 {
+				return io.EOF
+			}
+			if int64(fetch) > remaining {
+				fetch = int(remaining)
+			}
+		}
+
+		if err := r.fetchMoreRows(fetch); err != nil {
+			return err
+		}
+
+		// Check again after fetching
+		if len(r.bufferedRows) == 0 {
+			return io.EOF
+		}
+	}
+
+	// Return the next row
+	r.currentRow = r.bufferedRows[0]
+	r.bufferedRows = r.bufferedRows[1:]
+	r.rowOffset++
+
+	// Copy to dest
+	copy(dest, r.currentRow)
+
+	return nil
+}
+
+// fetchMoreRows sends RESULT_FETCH_ROWS and reads the rows.
+func (r *Rows) fetchMoreRows(fetch int) error {
+	if r.session == nil || r.session.tr == nil {
+		return driver.ErrBadConn
+	}
+
+	// Send RESULT_FETCH_ROWS
+	if err := r.session.tr.WriteInt32(ResultFetchRows); err != nil {
+		return fmt.Errorf("h2go: Rows.fetchMoreRows: failed to write op: %w", err)
+	}
+	if err := r.session.tr.WriteInt32(r.resultID); err != nil {
+		return fmt.Errorf("h2go: Rows.fetchMoreRows: failed to write result id: %w", err)
+	}
+	if err := r.session.tr.WriteInt32(int32(fetch)); err != nil {
+		return fmt.Errorf("h2go: Rows.fetchMoreRows: failed to write fetch size: %w", err)
+	}
+	if err := r.session.tr.Flush(); err != nil {
+		return fmt.Errorf("h2go: Rows.fetchMoreRows: flush failed: %w", err)
+	}
+
+	// Read the rows
+	return r.fetchRows(fetch)
+}
+
+// fetchRows reads up to 'fetch' rows from the transfer stream.
+// The wire format for each row is:
+//   - byte 1: row data follows, read each column value
+//   - byte 0: end of result (no more rows)
+//   - byte -1: exception/error
+func (r *Rows) fetchRows(fetch int) error {
+	for i := 0; i < fetch; i++ {
+		rowFlag, err := r.session.tr.ReadByte()
+		if err != nil {
+			return fmt.Errorf("h2go: fetchRows: failed to read row flag: %w", err)
+		}
+
+		switch int8(rowFlag) {
+		case 1:
+			// Row data follows
+			row := make([]driver.Value, r.columnCount)
+			for j := 0; j < int(r.columnCount); j++ {
+				colType := r.columns.GetColumn(j)
+				if colType == nil {
+					return fmt.Errorf("h2go: fetchRows: column %d metadata not found", j)
+				}
+				value, err := r.session.tr.ReadValue(colType.TypeInfo)
+				if err != nil {
+					return fmt.Errorf("h2go: fetchRows: failed to read column %d: %w", j, err)
+				}
+				row[j] = value
+			}
+			r.bufferedRows = append(r.bufferedRows, row)
+
+		case 0:
+			// End of result - server already closed it
+			return nil
+
+		case -1:
+			// Exception
+			h2Err := readH2Error(r.session.tr)
+			if h2Err == nil {
+				return fmt.Errorf("h2go: fetchRows: expected H2 error but got nil")
+			}
+			return h2Err
+
+		default:
+			return fmt.Errorf("h2go: fetchRows: unexpected row flag %d", rowFlag)
+		}
+	}
+
+	return nil
+}
+
+// HasNextResultSet is not supported in MVP.
+func (r *Rows) HasNextResultSet() bool {
+	return false
+}
+
+// NextResultSet is not supported in MVP.
+func (r *Rows) NextResultSet() error {
+	return fmt.Errorf("h2go: multiple result sets not supported in MVP")
+}
+
+// ColumnTypeDatabaseTypeName returns the database type name for a column.
+// This is part of the driver.RowsColumnTypeDatabaseTypeName interface (optional).
+func (r *Rows) ColumnTypeDatabaseTypeName(index int) string {
+	col := r.columns.GetColumn(index)
+	if col == nil || col.TypeInfo == nil {
+		return ""
+	}
+	return col.TypeInfo.DatabaseTypeName()
+}
+
+// ColumnTypeNullable returns the nullability for a column.
+// This is part of the driver.RowsColumnTypeNullable interface (optional).
+func (r *Rows) ColumnTypeNullable(index int) (nullable, ok bool) {
+	col := r.columns.GetColumn(index)
+	if col == nil {
+		return false, false
+	}
+	switch col.Nullable {
+	case ColumnNoNulls:
+		return false, true
+	case ColumnNullable:
+		return true, true
+	default:
+		return false, false // unknown
+	}
+}
+
+// ColumnTypeLength returns the length for variable-length types.
+// This is part of the driver.RowsColumnTypeLength interface (optional).
+func (r *Rows) ColumnTypeLength(index int) (length int64, ok bool) {
+	col := r.columns.GetColumn(index)
+	if col == nil || col.TypeInfo == nil {
+		return 0, false
+	}
+
+	switch col.TypeInfo.ValueType {
+	case ValueTypeVarchar, ValueTypeChar, ValueTypeVarcharIgnoreCase,
+		ValueTypeBinary, ValueTypeVarbinary, ValueTypeBlob, ValueTypeClob:
+		if col.TypeInfo.Precision >= 0 {
+			return col.TypeInfo.Precision, true
+		}
+	}
+	return 0, false
+}
+
+// ColumnTypePrecisionScale returns precision and scale for numeric types.
+// This is part of the driver.RowsColumnTypePrecisionScale interface (optional).
+func (r *Rows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok bool) {
+	col := r.columns.GetColumn(index)
+	if col == nil || col.TypeInfo == nil {
+		return 0, 0, false
+	}
+	return col.TypeInfo.PrecisionScale()
+}
+
+// ExecuteQuery executes a query and returns the result set rows.
+// This is a convenience method for simple query execution.
+func (s *Session) ExecuteQuery(ctx context.Context, sql string, maxRows int64, fetchSize int) (*Rows, error) {
+	if s.tr == nil {
+		return nil, fmt.Errorf("h2go: ExecuteQuery: session closed")
+	}
+
+	// Prepare the command
+	cmd, err := s.PrepareCommand(ctx, sql)
+	if err != nil {
+		return nil, fmt.Errorf("h2go: ExecuteQuery: prepare failed: %w", err)
+	}
+
+	// Check if it's actually a query
+	if !cmd.IsQuery {
+		_ = cmd.Close(s)
+		return nil, fmt.Errorf("h2go: ExecuteQuery: command is not a query: %s", sql)
+	}
+
+	// Generate a result ID
+	resultID := s.nextCommandID()
+
+	// Send COMMAND_EXECUTE_QUERY
+	if err := s.tr.WriteInt32(CommandExecuteQuery); err != nil {
+		_ = cmd.Close(s)
+		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write op: %w", err)
+	}
+	if err := s.tr.WriteInt32(cmd.ID); err != nil {
+		_ = cmd.Close(s)
+		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write command id: %w", err)
+	}
+	if err := s.tr.WriteInt32(resultID); err != nil {
+		_ = cmd.Close(s)
+		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write result id: %w", err)
+	}
+	if err := s.tr.WriteInt64(maxRows); err != nil {
+		_ = cmd.Close(s)
+		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write maxRows: %w", err)
+	}
+	if err := s.tr.WriteInt32(int32(fetchSize)); err != nil {
+		_ = cmd.Close(s)
+		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write fetchSize: %w", err)
+	}
+	if err := s.tr.Flush(); err != nil {
+		_ = cmd.Close(s)
+		return nil, fmt.Errorf("h2go: ExecuteQuery: flush failed: %w", err)
+	}
+
+	// Check context
+	select {
+	case <-ctx.Done():
+		_ = cmd.Close(s)
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Read response: column count
+	columnCount, err := s.tr.ReadInt32()
+	if err != nil {
+		_ = cmd.Close(s)
+		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to read column count: %w", err)
+	}
+
+	// Create Rows - this owns the command since it's an ad-hoc query
+	rows, err := NewRows(s, resultID, columnCount, fetchSize, true, cmd.ID)
+	if err != nil {
+		_ = cmd.Close(s)
+		return nil, err
+	}
+
+	return rows, nil
+}
+
+// ExecuteQueryPrepared executes a prepared query command and returns the result set.
+// The command should have been prepared with PrepareCommand or PrepareCommandReadParams.
+// The command is NOT closed when the rows are closed - it can be reused.
+func (s *Session) ExecuteQueryPrepared(ctx context.Context, cmd *PreparedCommand, maxRows int64, fetchSize int) (*Rows, error) {
+	if s.tr == nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: session closed")
+	}
+
+	if !cmd.IsQuery {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: command is not a query: %s", cmd.SQL)
+	}
+
+	// Generate a result ID
+	resultID := s.nextCommandID()
+
+	// Send COMMAND_EXECUTE_QUERY
+	if err := s.tr.WriteInt32(CommandExecuteQuery); err != nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write op: %w", err)
+	}
+	if err := s.tr.WriteInt32(cmd.ID); err != nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write command id: %w", err)
+	}
+	if err := s.tr.WriteInt32(resultID); err != nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write result id: %w", err)
+	}
+	if err := s.tr.WriteInt64(maxRows); err != nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write maxRows: %w", err)
+	}
+	if err := s.tr.WriteInt32(int32(fetchSize)); err != nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write fetchSize: %w", err)
+	}
+	if err := s.tr.Flush(); err != nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: flush failed: %w", err)
+	}
+
+	// Check context
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Read response: column count
+	columnCount, err := s.tr.ReadInt32()
+	if err != nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to read column count: %w", err)
+	}
+
+	// Create Rows - this does NOT own the command since it's a prepared statement
+	rows, err := NewRows(s, resultID, columnCount, fetchSize, false, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return rows, nil
+}

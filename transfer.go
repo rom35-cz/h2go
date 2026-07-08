@@ -330,6 +330,16 @@ func (t *Tr) ReadRowCount() (int64, error) {
 	return t.ReadInt64()
 }
 
+// ReadFull reads exactly len(buf) bytes into buf.
+// It returns io.EOF if the stream ends before filling the buffer.
+func (t *Tr) ReadFull(buf []byte) error {
+	if err := t.checkReader(); err != nil {
+		return err
+	}
+	_, err := io.ReadFull(t.r, buf)
+	return err
+}
+
 // ---- UTF-16 encoding helpers ----
 
 // utf16Encode encodes a Go string into a []uint16 of UTF-16 code units.
