@@ -20,6 +20,9 @@ test-race:
 	go test -race ./...
 
 test-integration:
+	@set -a; \
+	if [ -f h2-data/.env ]; then . ./h2-data/.env; fi; \
+	set +a; \
 	go test -tags=integration ./...
 
 clean:
