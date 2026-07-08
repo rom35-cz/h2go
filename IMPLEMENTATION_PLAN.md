@@ -192,6 +192,27 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Generate a client session id, then send `SESSION_SET_ID`, the session id, and a timezone id (required for protocol 20+); read status and the server autocommit boolean.
 - **Deliverables:** `handshake.go`, `session.go` (holds `transfer`, session id, negotiated version, autocommit state).
 - **Done when:** Unit test drives the handshake against a scripted in-memory server (recorded byte sequence) and asserts correct framing + version-mismatch rejection.
+- **Implementation notes:**
+  - `session.go`: `Session` struct holds `*Tr`, `id` (hex string), `version` (int32), `autoCommit` (bool). Provides `Close()`.
+  - `handshake.go`: `Handshake(cfg *Config) (*Session, error)` dials TCP via `net.JoinHostPort`, wraps the connection in `Tr` via `NewReadWriter`.
+  - The handshake sequence follows `SessionRemote.initTransfer` and `TcpServerThread.run` exactly:
+    1. Write `minVer=21, maxVer=21, dbName, originalURL, uppercasedUser, userPwHash, filePwHash(nil), nProps=0`.
+    2. Flush; read status. On `StatusError`, call `readH2Error` and return.
+    3. Read negotiated version; fail clearly if not 21.
+    4. Write `SessionSetID`, 64-char hex `sessionID` (32 random bytes, matching Java `MathUtils.secureRandomBytes(32)`), and `localTimeZoneID()` (checks `TZ` env → `time.Local.String()` → `"UTC"` fallback).
+    5. Flush; read status. On error, read and return `H2Error`.
+    6. Read `autoCommit` boolean.
+  - `errors.go`: Minimal `H2Error` struct (SQLState, Message, SQL, Code, StackTrace) and `readH2Error(tr)` to decode the `STATUS_ERROR` wire format.
+  - User name is uppercased with `strings.ToUpper` before sending (matching `ConnectionInfo.setUserName` + `StringUtils.toUpperEnglish` for ASCII). Verified by wire-format test.
+  - `handshake_test.go`: 7 tests + `TestSendCredentials_WireFormat` + `TestGenerateSessionID`. Tests use real TCP listeners (`net.Listen("tcp", "127.0.0.1:0")`) because `Handshake` dials itself.
+    - `TestHandshake_Success`: full round-trip, asserts all wire values and session state.
+    - `TestHandshake_VersionMismatch`: server returns version 20, client rejects with clear error.
+    - `TestHandshake_AuthError`: server returns `StatusError`, client decodes into `*H2Error` with SQLState "28000".
+    - `TestHandshake_ErrorAfterSessionSetID`: error flow after SESSION_SET_ID.
+    - `TestHandshake_CorrectUserNameUppercasingOnWire`: verifies "root" in Config becomes "ROOT" on the wire.
+  - Test count: 158 total (32 DSN + 57 Transfer + 14 Auth + 55 Handshake). All pass.
+  - Verified: `go build`, `go vet`, `go test`, `make lint` all pass. ✅
+- **Status:** ✅ Done — 2026-07-08
 
 ### T3.3 Connectivity integration test
 - **Goal:** Real login against H2 2.4.240.

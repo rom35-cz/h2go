@@ -1,0 +1,66 @@
+package h2go
+
+import (
+	"fmt"
+	"os"
+	"time"
+)
+
+// H2Error represents a structured error returned by the H2 server.
+// Phase 7 will add full decoding; for now it captures the fields sent
+// in the STATUS_ERROR response.
+type H2Error struct {
+	SQLState   string
+	Message    string
+	SQL        string
+	Code       int32
+	StackTrace string
+}
+
+// Error implements the error interface.
+func (e *H2Error) Error() string {
+	return fmt.Sprintf("H2 error [%s] %d: %s", e.SQLState, e.Code, e.Message)
+}
+
+// readH2Error reads a STATUS_ERROR response from the H2 server.
+// Wire format (Java readSQLException):
+//
+//	sqlState   (string)
+//	message    (string)
+//	sql        (string, may be null)
+//	errorCode  (int32)
+//	stackTrace (string)
+func readH2Error(tr *Tr) error {
+	sqlState, _ := tr.ReadString()
+	message, _ := tr.ReadString()
+	sql, _ := tr.ReadString()
+	errorCode, _ := tr.ReadInt32()
+	stackTrace, _ := tr.ReadString()
+	return &H2Error{
+		SQLState:   derefStr(sqlState),
+		Message:    derefStr(message),
+		SQL:        derefStr(sql),
+		Code:       errorCode,
+		StackTrace: derefStr(stackTrace),
+	}
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// localTimeZoneID returns the system's local timezone identifier.
+// It first checks the TZ environment variable, then falls back to the
+// Go runtime's local timezone name, and ultimately to "UTC".
+func localTimeZoneID() string {
+	if tz := os.Getenv("TZ"); tz != "" {
+		return tz
+	}
+	if name := time.Local.String(); name != "Local" {
+		return name
+	}
+	return "UTC"
+}
