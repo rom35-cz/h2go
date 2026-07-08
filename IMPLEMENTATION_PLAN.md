@@ -124,6 +124,17 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - `flush()` and buffered read helpers.
 - **Deliverables:** `transfer.go`, `transfer_test.go` (round-trip via `bytes.Buffer` and/or `net.Pipe`).
 - **Done when:** Every primitive round-trips in unit tests, including edge cases (empty string, null string/bytes, nil bytes, negative ints, large int64, non-ASCII strings, non-BMP strings, float32/float64 values).
+- **Implementation notes:**
+  - `Tr` wraps `bufio.Reader`/`bufio.Writer` over `io.ReadWriteCloser`. Multi-byte primitives use `binary.BigEndian` encoding.
+  - String encoding matches H2 `Transfer.writeString`: `WriteString` writes int32 UTF-16 code-unit length (Java `String.length()`), then each code unit as big-endian uint16. Null is length `-1`. `utf16Encode`/`utf16Decode` handle surrogate pairs for non-BMP characters.
+  - `ReadString` returns `*string` to distinguish `null` vs empty `""`. `ReadStringPtr` is a convenience wrapper returning the string or empty.
+  - `WriteNullString`/`WriteBytes(nil)` write a length `-1` marker.
+  - `WriteRowCount`/`ReadRowCount` use int64 (protocol 21 always uses long).
+  - Adjacent write methods on the same `Tr` are buffered; call `Flush()` to send.
+  - The reference Java source (`Transfer.java`) shows `writeString` using `out.writeChars(s)`, which writes each Java char (16-bit) in big-endian order. This matches `binary.BigEndian.PutUint16` per code unit.
+  - `gofmt` and `staticcheck` an unparam (`utf16Valid(s)` never uses `s`; renamed to `_`), and a `[]rune` conversion (ranging over `s` directly avoids it). Fixed.
+  - Verification: `go build ./...`, `go vet ./...`, `go test -v ./...` (89 tests across DSN+Transfer), `make lint` all pass. ✅
+- **Status:** ✅ Done — 2026-07-08
 
 ### T2.2 Protocol constants
 - **Goal:** Central, documented constant set.
