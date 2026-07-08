@@ -52,6 +52,12 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - There is **no remote CI pipeline**; all steps run on the local machine.
 - **Deliverables:** `Makefile`, `.golangci.yml`.
 - **Done when:** `make build`, `make vet`, and `make test` succeed locally.
+- **Implementation notes:**
+  - Makefile and `.golangci.yml` were created in T0.1; this task verified and hardened them.
+  - The installed `golangci-lint` v2.x requires `version: "2"` at the top of config. The `.golangci.yml` was rewritten to v2 format with `linters.default: none`, explicit enable list, and `formatters.gofmt` enabled.
+  - `doc.go` was missing a trailing newline (`gofmt` issue); fixed with `gofmt -w`.
+  - Verified: `make build`, `make vet`, `make test`, `make lint`, `make test-race`, `make test-integration` all succeed. ✅
+- **Status:** ✅ Done — 2026-07-08
 
 ---
 

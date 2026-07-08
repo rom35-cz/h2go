@@ -1,16 +1,22 @@
+version: "2"
 linters:
+  default: none
   enable:
     - govet
     - staticcheck
     - errcheck
     - ineffassign
     - revive
-
-run:
-  timeout: 5m
-  tests: false
-
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+formatters:
+  enable:
+    - gofmt
 issues:
-  exclude-use-default: false
+  exclude-files:
+    - _test\.go
   max-issues-per-linter: 0
   max-same-issues: 0
