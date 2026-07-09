@@ -591,12 +591,19 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
 ### T7.1 Structured H2 errors
 - **Goal:** Rich, typed SQL errors.
 - **Work:** Reference `TcpServerThread` error frame + `DbException`.
-  - `errors.go`: `type Error struct { SQLState string; Code int; Message, SQL, Trace string }` implementing `error`; constructor decoding the H2 error status frame.
+  - `errors.go`: `type Error struct { SQLState string; Message string; SQL string; Code int32; StackTrace string }` implementing `error` and `fmt.Formatter`; `type H2Error = Error` kept as a compatibility alias for existing tests/callers.
   - Sentinel errors: `ErrUnsupportedServerVersion`, `ErrUnsupportedType`, `ErrClosed`.
-  - Preserve SQLState, vendor code, original message, SQL text, and trace fields, but never add passwords or password hashes to client-side error text/logs. Keep server trace out of the default `Error()` string unless explicitly formatted for debugging.
-  - Retrofit handshake (T3.2) and command paths to return `*Error` where the server supplied an H2 SQL error frame.
+  - Preserve SQLState, vendor code, original message, SQL text, and trace fields, but keep server trace out of the default `Error()` string. `%+v` formatting appends the trace for debug output.
+  - `readH2Error` decodes the full H2 `STATUS_ERROR` payload into `*Error`; `wrapError` preserves H2 server errors unchanged so command/handshake callers can still type-assert them directly.
+  - Handshake now uses `ErrUnsupportedServerVersion` for protocol mismatch; `readStatus` uses `ErrClosed` for session-closed responses; unsupported type decoding/encoding paths use `ErrUnsupportedType`.
 - **Deliverables:** `errors.go`, `errors_test.go`.
+- **Implementation notes:**
+  - Added `TestReadH2Error` to pin field decoding plus `Error()` / `%+v` formatting.
+  - Added `TestReadStatusClosedReturnsErrClosed`, `TestWrapErrorPreservesH2Error`, and sentinel coverage for the exported error values.
+  - Retrofitted `PrepareCommand`, `PrepareCommandReadParams`, `Rows.fetchMoreRows`, `executeQueryWire`, and `ExecuteUpdatePreparedWithParams` to use `wrapError`, so `*Error` values are preserved instead of being hidden behind extra context wrapping.
+  - Integration and handshake tests now assert `ErrUnsupportedServerVersion` for protocol mismatch and `ErrUnsupportedType` for unsupported value round-trips.
 - **Done when:** Server errors expose SQLState + H2 code; unit tests decode a scripted error frame; integration test asserts a real syntax error surfaces code/state.
+- **Status:** ✅ Done — 2026-07-09
 
 ---
 

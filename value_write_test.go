@@ -3,6 +3,7 @@ package h2go
 import (
 	"bytes"
 	"database/sql/driver"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -294,6 +295,9 @@ func TestWriteValue_UnsupportedType(t *testing.T) {
 	err := tr.WriteValue(complex(1, 2), nil)
 	if err == nil {
 		t.Fatal("expected unsupported type error")
+	}
+	if !errors.Is(err, ErrUnsupportedType) {
+		t.Fatalf("expected ErrUnsupportedType, got %T: %v", err, err)
 	}
 	if !strings.Contains(err.Error(), "unsupported driver.Value type") {
 		t.Fatalf("error: got %v, want unsupported-type message", err)

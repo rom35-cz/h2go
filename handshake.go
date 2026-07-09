@@ -70,8 +70,8 @@ func Handshake(cfg *Config) (*Session, error) {
 	if version != TCPProtocolVersion21 {
 		_ = tr.Close()
 		return nil, fmt.Errorf(
-			"unsupported H2 server version; require protocol 21 / H2 2.4.240+ (got %d)",
-			version)
+			"%w; require protocol 21 / H2 2.4.240+ (got %d)",
+			ErrUnsupportedServerVersion, version)
 	}
 
 	// Step 3: send SESSION_SET_ID.

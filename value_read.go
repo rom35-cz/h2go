@@ -91,11 +91,11 @@ func (tr *Tr) ReadValue(_ *TypeInfo) (driver.Value, error) {
 	case ValueTypeArray, ValueTypeRow, ValueTypeEnum, ValueTypeGeometry,
 		ValueTypeInterval, ValueTypeJavaObject, ValueTypeJSON:
 		// MVP: return error for unsupported complex types
-		return nil, fmt.Errorf("h2go: ReadValue: unsupported type code %d (%s) for MVP",
-			typeCode, valueTypeName(typeCode))
+		return nil, fmt.Errorf("h2go: ReadValue: %w: type code %d (%s)",
+			ErrUnsupportedType, typeCode, valueTypeName(typeCode))
 
 	default:
-		return nil, fmt.Errorf("h2go: ReadValue: unknown type code %d", typeCode)
+		return nil, fmt.Errorf("h2go: ReadValue: %w: unknown type code %d", ErrUnsupportedType, typeCode)
 	}
 }
 
@@ -242,7 +242,7 @@ func (tr *Tr) readLOBValue(typeCode int32) (driver.Value, error) {
 			_, _ = tr.ReadInt64() // octetLength (protocol 20+)
 		}
 		_, _ = tr.ReadInt64() // charLength or precision
-		return nil, fmt.Errorf("h2go: readLOBValue: fetch-on-demand LOB not supported in MVP")
+		return nil, fmt.Errorf("h2go: readLOBValue: %w: fetch-on-demand LOB", ErrUnsupportedType)
 	}
 
 	if length < 0 {
@@ -272,7 +272,7 @@ func (tr *Tr) readLOBValue(typeCode int32) (driver.Value, error) {
 	// CLOB data is read as UTF-8 via DataReader
 	// For simplicity in MVP, we read as a potentially large string
 	// Note: This may need adjustment based on actual wire format testing
-	return nil, fmt.Errorf("h2go: readLOBValue: inline CLOB not yet implemented")
+	return nil, fmt.Errorf("h2go: readLOBValue: %w: inline CLOB", ErrUnsupportedType)
 }
 
 // lobMagic is the magic number written by H2 after inline LOB data.

@@ -4,6 +4,7 @@ package h2go
 
 import (
 	"bytes"
+	"errors"
 	"math"
 	"testing"
 	"time"
@@ -613,6 +614,25 @@ func TestReadValue_TimestampTZ_NegativeYear(t *testing.T) {
 		t.Errorf("BC date: got %v, want year=-1 month=3 day=15", got)
 	}
 	_ = offsetSec // suppress unused warning
+}
+
+// TestReadValue_UnsupportedType ensures unsupported H2 types are surfaced
+// with the ErrUnsupportedType sentinel.
+func TestReadValue_UnsupportedType(t *testing.T) {
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeJSON)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if val != nil {
+		t.Fatalf("expected nil value, got %v", val)
+	}
+	if !errors.Is(err, ErrUnsupportedType) {
+		t.Fatalf("expected ErrUnsupportedType, got %T: %v", err, err)
+	}
 }
 
 // TestValueTypeName tests type name strings.

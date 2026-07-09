@@ -154,7 +154,7 @@ func (s *Session) ExecuteUpdatePreparedWithParams(cmd *PreparedCommand, params [
 	// Read response: status, updateCount (rowCount), autoCommit.
 	// Server: writeInt(status) . writeRowCount(updateCount) . writeBoolean(autoCommit)
 	if err := readStatus(s.tr); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteUpdatePreparedWithParams: %w", err)
+		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
 	updateCount, err := s.tr.ReadRowCount()

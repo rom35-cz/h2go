@@ -2,6 +2,7 @@ package h2go
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -165,6 +166,9 @@ func TestHandshake_VersionMismatch(t *testing.T) {
 	_, err := Handshake(cfg)
 	if err == nil {
 		t.Fatal("expected error for version mismatch")
+	}
+	if !errors.Is(err, ErrUnsupportedServerVersion) {
+		t.Fatalf("expected ErrUnsupportedServerVersion, got %T: %v", err, err)
 	}
 	if !strings.Contains(err.Error(), "protocol 21") {
 		t.Fatalf("error = %q, want message containing 'protocol 21'", err.Error())

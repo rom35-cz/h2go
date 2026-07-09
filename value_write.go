@@ -100,7 +100,7 @@ func (tr *Tr) WriteValue(v driver.Value, paramType *TypeInfo) error {
 		return tr.writeTimeValue(x, paramType)
 
 	default:
-		return fmt.Errorf("h2go: WriteValue: unsupported driver.Value type %T", v)
+		return fmt.Errorf("h2go: WriteValue: %w: unsupported driver.Value type %T", ErrUnsupportedType, v)
 	}
 }
 

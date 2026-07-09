@@ -288,7 +288,7 @@ func (r *Rows) fetchMoreRows(fetch int) error {
 
 	// Server responds: writeInt(STATUS_OK) then row bytes (sendRows).
 	if err := readStatus(r.session.tr); err != nil {
-		return fmt.Errorf("h2go: Rows.fetchMoreRows: %w", err)
+		return wrapError("Rows.fetchMoreRows", err)
 	}
 
 	// Read the rows
@@ -576,7 +576,7 @@ func (s *Session) executeQueryWire(ctx context.Context, cmd *PreparedCommand, ma
 		if ownsCommand {
 			_ = cmd.Close(s)
 		}
-		return nil, fmt.Errorf("h2go: executeQueryWire: %w", err)
+		return nil, wrapError("executeQueryWire", err)
 	}
 
 	columnCount, err := s.tr.ReadInt32()
