@@ -17,6 +17,7 @@ func TestConnImplementsInterfaces(_ *testing.T) {
 	var _ driver.Pinger = (*conn)(nil)
 	var _ driver.QueryerContext = (*conn)(nil)
 	var _ driver.ExecerContext = (*conn)(nil)
+	var _ driver.NamedValueChecker = (*conn)(nil)
 }
 
 // TestConnPrepareSessionClosed verifies Prepare reports a session/transport error
@@ -241,6 +242,24 @@ func TestConnExecContextWithArgs(t *testing.T) {
 	}
 }
 
+type testValuerString string
+
+func (v testValuerString) Value() (driver.Value, error) {
+	return string(v), nil
+}
+
+func TestConnCheckNamedValue(t *testing.T) {
+	c := &conn{}
+
+	nv := driver.NamedValue{Ordinal: 1, Value: testValuerString("abc")}
+	if err := c.CheckNamedValue(&nv); err != nil {
+		t.Fatalf("CheckNamedValue failed: %v", err)
+	}
+	if got, ok := nv.Value.(string); !ok || got != "abc" {
+		t.Fatalf("converted value: got %T(%v), want string(abc)", nv.Value, nv.Value)
+	}
+}
+
 func TestConvertNamedValues(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -251,7 +270,7 @@ func TestConvertNamedValues(t *testing.T) {
 			name: "positional ok",
 			in: []driver.NamedValue{
 				{Name: "", Ordinal: 1, Value: 7},
-				{Name: "", Ordinal: 2, Value: "hello"},
+				{Name: "", Ordinal: 2, Value: testValuerString("hello")},
 				{Name: "", Ordinal: 3, Value: []byte{0xAB}},
 				{Name: "", Ordinal: 4, Value: time.Date(2026, 7, 9, 13, 0, 0, 0, time.UTC)},
 			},
@@ -299,6 +318,9 @@ func TestConvertNamedValues(t *testing.T) {
 			}
 			if _, ok := vals[0].(int64); !ok {
 				t.Fatalf("vals[0] type=%T, want int64", vals[0])
+			}
+			if got, ok := vals[1].(string); !ok || got != "hello" {
+				t.Fatalf("vals[1]=%T(%v), want string(hello)", vals[1], vals[1])
 			}
 		})
 	}

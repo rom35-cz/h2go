@@ -535,6 +535,26 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Implement `driver.NamedValueChecker` on `conn`/`stmt`: accept `driver.Valuer` (incl. `github.com/google/uuid.UUID`), map supported Go types, and reject named params with a clear error because the MVP supports positional `?` parameters only.
 - **Deliverables:** conversion logic + tests.
 - **Done when:** `uuid.UUID` and standard types pass; unsupported/named args rejected clearly.
+- **Implementation notes:**
+  - Added `CheckNamedValue(*driver.NamedValue) error` on both `conn` and `stmt`.
+  - Introduced shared normalization helper in `conn.go` (`normalizeNamedValue`) used by both checkers and by `convertNamedValues`:
+    - rejects non-empty `NamedValue.Name` with a clear positional-only error,
+    - validates `Ordinal >= 1`,
+    - converts via `driver.DefaultParameterConverter` (thereby accepting `driver.Valuer` values),
+    - restricts accepted converted types to MVP wire-supported set: `nil`, `bool`, `int64`, `float64`, `string`, `[]byte`, `time.Time`.
+  - `convertNamedValues` now reuses normalization and additionally enforces contiguous ordinal ordering (`1..N`) before execution.
+  - Compile-time interface assertions added:
+    - `var _ driver.NamedValueChecker = (*conn)(nil)`
+    - `var _ driver.NamedValueChecker = (*stmt)(nil)`
+  - Unit tests:
+    - `TestConnCheckNamedValue` verifies `driver.Valuer` conversion (custom valuer type → string).
+    - `TestConvertNamedValues` expanded to cover valuer happy path and named/ordinal/unsupported failures.
+    - `stmt_test.go` now asserts `NamedValueChecker` compliance and tests `stmt.CheckNamedValue`.
+  - Integration validation strengthened with `github.com/google/uuid`:
+    - `TestIntegration_ExecContextWithParams` now passes `uuid.UUID` directly as a parameter and verifies round-trip UUID text in the database.
+  - Module dependency added for integration validation: `github.com/google/uuid v1.6.0`.
+  - Verification: `go build ./...`, `go vet ./...`, `go test -race ./...`, `go test -tags integration ./...`, `golangci-lint run` all green. ✅
+- **Status:** ✅ Done — 2026-07-09
 
 ---
 

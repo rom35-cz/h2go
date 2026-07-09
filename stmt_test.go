@@ -11,6 +11,18 @@ func TestStmtImplementsInterfaces(_ *testing.T) {
 	var _ driver.Stmt = (*stmt)(nil)
 	var _ driver.StmtExecContext = (*stmt)(nil)
 	var _ driver.StmtQueryContext = (*stmt)(nil)
+	var _ driver.NamedValueChecker = (*stmt)(nil)
+}
+
+func TestStmtCheckNamedValue(t *testing.T) {
+	s := &stmt{}
+	nv := driver.NamedValue{Ordinal: 1, Value: testValuerString("x")}
+	if err := s.CheckNamedValue(&nv); err != nil {
+		t.Fatalf("CheckNamedValue failed: %v", err)
+	}
+	if got, ok := nv.Value.(string); !ok || got != "x" {
+		t.Fatalf("converted value: got %T(%v), want string(x)", nv.Value, nv.Value)
+	}
 }
 
 func TestStmtNumInput(t *testing.T) {

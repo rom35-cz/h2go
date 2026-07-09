@@ -203,29 +203,51 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	return &result{affected: res.UpdateCount}, nil
 }
 
-// convertNamedValues converts ExecContext arguments to supported driver.Value
-// types for wire encoding. Only positional parameters are supported.
+// CheckNamedValue validates and normalizes one argument for this connection.
+//
+// It enforces positional-only placeholders, converts driver.Valuer values
+// (including github.com/google/uuid.UUID via Value()), and restricts values to
+// the MVP supported set.
+func (c *conn) CheckNamedValue(nv *driver.NamedValue) error {
+	return normalizeNamedValue(nv)
+}
+
+// normalizeNamedValue validates and converts one argument in-place.
+func normalizeNamedValue(nv *driver.NamedValue) error {
+	if nv.Name != "" {
+		return fmt.Errorf("h2go: named parameters are not supported; use positional ? placeholders")
+	}
+	if nv.Ordinal < 1 {
+		return fmt.Errorf("h2go: invalid parameter ordinal %d", nv.Ordinal)
+	}
+
+	v, err := driver.DefaultParameterConverter.ConvertValue(nv.Value)
+	if err != nil {
+		return fmt.Errorf("h2go: parameter %d conversion failed: %w", nv.Ordinal, err)
+	}
+
+	switch v.(type) {
+	case nil, bool, int64, float64, string, []byte, time.Time:
+		nv.Value = v
+		return nil
+	default:
+		return fmt.Errorf("h2go: parameter %d has unsupported type %T", nv.Ordinal, v)
+	}
+}
+
+// convertNamedValues converts arguments to supported driver.Value types for wire
+// encoding and verifies ordinal order is contiguous and positional.
 func convertNamedValues(args []driver.NamedValue) ([]driver.Value, error) {
 	values := make([]driver.Value, len(args))
-	for i, arg := range args {
-		if arg.Name != "" {
-			return nil, fmt.Errorf("h2go: named parameters are not supported; use positional ? placeholders")
+	for i := range args {
+		arg := args[i]
+		if err := normalizeNamedValue(&arg); err != nil {
+			return nil, err
 		}
 		if arg.Ordinal != i+1 {
 			return nil, fmt.Errorf("h2go: invalid parameter ordinal %d at index %d", arg.Ordinal, i)
 		}
-
-		v, err := driver.DefaultParameterConverter.ConvertValue(arg.Value)
-		if err != nil {
-			return nil, fmt.Errorf("h2go: parameter %d conversion failed: %w", i+1, err)
-		}
-
-		switch v.(type) {
-		case nil, bool, int64, float64, string, []byte, time.Time:
-			values[i] = v
-		default:
-			return nil, fmt.Errorf("h2go: parameter %d has unsupported type %T", i+1, v)
-		}
+		values[i] = arg.Value
 	}
 	return values, nil
 }
@@ -242,5 +264,6 @@ var (
 	_ driver.Pinger             = (*conn)(nil)
 	_ driver.QueryerContext     = (*conn)(nil)
 	_ driver.ExecerContext      = (*conn)(nil)
+	_ driver.NamedValueChecker  = (*conn)(nil)
 	// Validator and SessionResetter in T9.1
 )

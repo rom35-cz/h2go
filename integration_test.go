@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // loadEnvFromFile reads a simple KEY=value .env file and returns the
@@ -558,11 +560,11 @@ func TestIntegration_ExecContextWithParams(t *testing.T) {
 	_, _ = db.ExecContext(ctx, "DELETE FROM t62_exec_params")
 
 	ts := time.Date(2026, 7, 9, 14, 15, 16, 987654000, time.FixedZone("+05", 5*3600))
-	uuidText := "12345678-1234-5678-9ABC-DEF012345678"
+	uuidVal := uuid.MustParse("12345678-1234-5678-9abc-def012345678")
 
 	res, err := db.ExecContext(ctx,
 		"INSERT INTO t62_exec_params (id, amount, uid, ts_tz, payload) VALUES (?, ?, ?, ?, ?)",
-		7, "12345.6789", uuidText, ts, []byte{0xDE, 0xAD, 0xBE, 0xEF})
+		7, "12345.6789", uuidVal, ts, []byte{0xDE, 0xAD, 0xBE, 0xEF})
 	if err != nil {
 		t.Fatalf("INSERT with params failed: %v", err)
 	}
@@ -596,8 +598,8 @@ func TestIntegration_ExecContextWithParams(t *testing.T) {
 	if amount != "555.0001" {
 		t.Fatalf("amount: got %q, want 555.0001", amount)
 	}
-	if strings.ToLower(uid) != "12345678-1234-5678-9abc-def012345678" {
-		t.Fatalf("uid: got %q", uid)
+	if strings.ToLower(uid) != uuidVal.String() {
+		t.Fatalf("uid: got %q, want %q", uid, uuidVal.String())
 	}
 	if !bytes.Equal(payload, []byte{0xDE, 0xAD, 0xBE, 0xEF}) {
 		t.Fatalf("payload: got %X", payload)

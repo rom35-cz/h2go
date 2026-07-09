@@ -136,6 +136,11 @@ func (s *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 	return rows, nil
 }
 
+// CheckNamedValue validates and normalizes one argument for this statement.
+func (s *stmt) CheckNamedValue(nv *driver.NamedValue) error {
+	return normalizeNamedValue(nv)
+}
+
 func (s *stmt) snapshotOpen() (*conn, *PreparedCommand, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -146,7 +151,8 @@ func (s *stmt) snapshotOpen() (*conn, *PreparedCommand, error) {
 }
 
 var (
-	_ driver.Stmt             = (*stmt)(nil)
-	_ driver.StmtExecContext  = (*stmt)(nil)
-	_ driver.StmtQueryContext = (*stmt)(nil)
+	_ driver.Stmt              = (*stmt)(nil)
+	_ driver.StmtExecContext   = (*stmt)(nil)
+	_ driver.StmtQueryContext  = (*stmt)(nil)
+	_ driver.NamedValueChecker = (*stmt)(nil)
 )
