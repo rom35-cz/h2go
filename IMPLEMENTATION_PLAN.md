@@ -476,7 +476,24 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Integration: `CREATE TABLE`, `INSERT`, `UPDATE`, `DELETE`, `MERGE` with affected-row assertions.
 - **Deliverables:** `result.go`, exec path, integration tests.
 - **Done when:** DDL/DML execute; affected counts correct.
-- **Status:** ✅ Done (merged into T5.3) — 2026-07-08
+- **Implementation notes:**
+  - `conn.ExecContext` now supports positional parameters end-to-end (no `ErrSkip` for arg-bearing exec calls).
+  - Added argument conversion helper `convertNamedValues` in `conn.go`:
+    - Uses `driver.DefaultParameterConverter` so `database/sql` compatible primitives and `driver.Valuer` outputs are normalized.
+    - Enforces positional-only semantics (`Name == ""`, ordinal continuity).
+    - Accepts only MVP wire-supported converted types: `nil`, `bool`, `int64`, `float64`, `string`, `[]byte`, `time.Time`.
+  - Added parameterized update execution path in `session.go`:
+    - `ExecuteUpdateWithParams(ctx, sql, []driver.Value)` prepares with `SESSION_PREPARE_READ_PARAMS2` to obtain parameter metadata.
+    - `ExecuteUpdatePreparedWithParams(cmd, params)` writes `COMMAND_EXECUTE_UPDATE`, parameter count, each value via `Tr.WriteValue(...)`, then generated-keys mode `GeneratedKeysNone`.
+    - Validates parameter arity (`len(params)` equals prepared `ParamCount`) before writing to wire.
+  - Existing parameterless path remains unchanged:
+    - `ExecuteUpdate(ctx, sql)` still uses `SESSION_PREPARE` and delegates to `ExecuteUpdatePrepared(cmd)`.
+    - `ExecuteUpdatePrepared(cmd)` now delegates to `ExecuteUpdatePreparedWithParams(cmd, nil)`.
+  - Added/updated tests:
+    - `conn_test.go`: updated parameterized exec behavior test (no `ErrSkip`), added `TestConvertNamedValues` coverage (happy path + named/ordinal/conversion failures).
+    - `integration_test.go`: added `TestIntegration_ExecContextWithParams` validating INSERT/UPDATE/DELETE with positional params including metadata-sensitive values (`NUMERIC` string, `UUID` string, `TIMESTAMP WITH TIME ZONE`, `VARBINARY`) and row-count assertions.
+  - Live verification against H2 2.4.240 confirms parameterized `ExecContext` works for DML and preserves expected typed values on read-back.
+- **Status:** ✅ Done — 2026-07-09
 
 ### T6.3 Prepared statements
 - **Goal:** Reusable `driver.Stmt` with param metadata.

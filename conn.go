@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // ErrNotYetSupported is returned for operations that are not yet
@@ -171,9 +172,15 @@ func (c *conn) queryContextInternal(ctx context.Context, query string) (driver.R
 //
 // ExecContext implements driver.ExecerContext.
 func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	var (
+		params []driver.Value
+		err    error
+	)
 	if len(args) > 0 {
-		// Parameters not yet supported; let database/sql fall back
-		return nil, driver.ErrSkip
+		params, err = convertNamedValues(args)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if err := c.acquire(); err != nil {
@@ -181,12 +188,44 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	}
 	defer c.release()
 
-	res, err := c.sess.ExecuteUpdate(ctx, query)
+	var res *ResultWithUpdateCount
+	if len(params) == 0 {
+		res, err = c.sess.ExecuteUpdate(ctx, query)
+	} else {
+		res, err = c.sess.ExecuteUpdateWithParams(ctx, query, params)
+	}
 	if err != nil {
 		return nil, err
 	}
 
 	return &result{affected: res.UpdateCount}, nil
+}
+
+// convertNamedValues converts ExecContext arguments to supported driver.Value
+// types for wire encoding. Only positional parameters are supported.
+func convertNamedValues(args []driver.NamedValue) ([]driver.Value, error) {
+	values := make([]driver.Value, len(args))
+	for i, arg := range args {
+		if arg.Name != "" {
+			return nil, fmt.Errorf("h2go: named parameters are not supported; use positional ? placeholders")
+		}
+		if arg.Ordinal != i+1 {
+			return nil, fmt.Errorf("h2go: invalid parameter ordinal %d at index %d", arg.Ordinal, i)
+		}
+
+		v, err := driver.DefaultParameterConverter.ConvertValue(arg.Value)
+		if err != nil {
+			return nil, fmt.Errorf("h2go: parameter %d conversion failed: %w", i+1, err)
+		}
+
+		switch v.(type) {
+		case nil, bool, int64, float64, string, []byte, time.Time:
+			values[i] = v
+		default:
+			return nil, fmt.Errorf("h2go: parameter %d has unsupported type %T", i+1, v)
+		}
+	}
+	return values, nil
 }
 
 // defaultFetchSize is the default number of rows to fetch in one batch.

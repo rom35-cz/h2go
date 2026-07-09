@@ -3,6 +3,7 @@
 package h2go
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -527,6 +528,96 @@ func TestIntegration_ExecContext(t *testing.T) {
 		t.Fatalf("DROP TABLE failed: %v", err)
 	}
 	t.Log("DROP TABLE OK")
+}
+
+// TestIntegration_ExecContextWithParams validates positional parameter binding
+// for ExecContext using T6.1 value encoding (including metadata-aware NUMERIC
+// and UUID string handling).
+func TestIntegration_ExecContextWithParams(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS t62_exec_params (
+		id INT PRIMARY KEY,
+		amount NUMERIC(12,4),
+		uid UUID,
+		ts_tz TIMESTAMP WITH TIME ZONE,
+		payload VARBINARY
+	)`)
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer func() {
+		_, _ = db.ExecContext(ctx, "DROP TABLE IF EXISTS t62_exec_params")
+	}()
+
+	_, _ = db.ExecContext(ctx, "DELETE FROM t62_exec_params")
+
+	ts := time.Date(2026, 7, 9, 14, 15, 16, 987654000, time.FixedZone("+05", 5*3600))
+	uuidText := "12345678-1234-5678-9ABC-DEF012345678"
+
+	res, err := db.ExecContext(ctx,
+		"INSERT INTO t62_exec_params (id, amount, uid, ts_tz, payload) VALUES (?, ?, ?, ?, ?)",
+		7, "12345.6789", uuidText, ts, []byte{0xDE, 0xAD, 0xBE, 0xEF})
+	if err != nil {
+		t.Fatalf("INSERT with params failed: %v", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected != 1 {
+		t.Fatalf("INSERT affected %d rows, want 1", affected)
+	}
+
+	res, err = db.ExecContext(ctx,
+		"UPDATE t62_exec_params SET amount = ? WHERE id = ?",
+		"555.0001", 7)
+	if err != nil {
+		t.Fatalf("UPDATE with params failed: %v", err)
+	}
+	affected, _ = res.RowsAffected()
+	if affected != 1 {
+		t.Fatalf("UPDATE affected %d rows, want 1", affected)
+	}
+
+	var (
+		amount  string
+		uid     string
+		tsRead  time.Time
+		payload []byte
+	)
+	if err := db.QueryRowContext(ctx,
+		"SELECT amount, uid, ts_tz, payload FROM t62_exec_params WHERE id = 7").
+		Scan(&amount, &uid, &tsRead, &payload); err != nil {
+		t.Fatalf("SELECT verification failed: %v", err)
+	}
+	if amount != "555.0001" {
+		t.Fatalf("amount: got %q, want 555.0001", amount)
+	}
+	if strings.ToLower(uid) != "12345678-1234-5678-9abc-def012345678" {
+		t.Fatalf("uid: got %q", uid)
+	}
+	if !bytes.Equal(payload, []byte{0xDE, 0xAD, 0xBE, 0xEF}) {
+		t.Fatalf("payload: got %X", payload)
+	}
+	_, offset := tsRead.Zone()
+	if offset != 5*3600 {
+		t.Fatalf("ts_tz offset: got %d, want %d", offset, 5*3600)
+	}
+	if !tsRead.UTC().Equal(ts.UTC()) {
+		t.Fatalf("ts_tz UTC: got %v, want %v", tsRead.UTC(), ts.UTC())
+	}
+
+	res, err = db.ExecContext(ctx, "DELETE FROM t62_exec_params WHERE id = ?", 7)
+	if err != nil {
+		t.Fatalf("DELETE with params failed: %v", err)
+	}
+	affected, _ = res.RowsAffected()
+	if affected != 1 {
+		t.Fatalf("DELETE affected %d rows, want 1", affected)
+	}
 }
 
 // TestIntegration_QueryLargeResult checks that a result larger than one fetch

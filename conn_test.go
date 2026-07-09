@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestConnImplementsInterfaces verifies conn implements required interfaces.
@@ -222,8 +224,9 @@ func TestConnQueryContextWithArgs(t *testing.T) {
 	}
 }
 
-// TestConnExecContextWithArgs verifies ExecContext returns ErrSkip
-// when arguments are provided (parameter support not yet implemented).
+// TestConnExecContextWithArgs verifies ExecContext takes the parameterized
+// execution path (no longer ErrSkip). The mock session has no wire transport,
+// so the request fails later with a regular execution error.
 func TestConnExecContextWithArgs(t *testing.T) {
 	c := &conn{
 		sess: &Session{id: "test-session"},
@@ -232,8 +235,74 @@ func TestConnExecContextWithArgs(t *testing.T) {
 	_, err := c.ExecContext(context.Background(), "INSERT INTO t VALUES (?)", []driver.NamedValue{
 		{Name: "", Ordinal: 1, Value: int64(1)},
 	})
-	if err != driver.ErrSkip {
-		t.Errorf("expected ErrSkip for parameterized exec, got %v", err)
+	if err == nil {
+		t.Fatal("expected execution error for mock session")
+	}
+	if errors.Is(err, driver.ErrSkip) {
+		t.Errorf("expected parameterized exec path, got ErrSkip")
+	}
+}
+
+func TestConvertNamedValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      []driver.NamedValue
+		wantErr string
+	}{
+		{
+			name: "positional ok",
+			in: []driver.NamedValue{
+				{Name: "", Ordinal: 1, Value: 7},
+				{Name: "", Ordinal: 2, Value: "hello"},
+				{Name: "", Ordinal: 3, Value: []byte{0xAB}},
+				{Name: "", Ordinal: 4, Value: time.Date(2026, 7, 9, 13, 0, 0, 0, time.UTC)},
+			},
+		},
+		{
+			name: "named rejected",
+			in: []driver.NamedValue{
+				{Name: "id", Ordinal: 1, Value: 1},
+			},
+			wantErr: "named parameters are not supported",
+		},
+		{
+			name: "ordinal mismatch",
+			in: []driver.NamedValue{
+				{Name: "", Ordinal: 2, Value: 1},
+			},
+			wantErr: "invalid parameter ordinal",
+		},
+		{
+			name: "unsupported",
+			in: []driver.NamedValue{
+				{Name: "", Ordinal: 1, Value: complex(1, 2)},
+			},
+			wantErr: "conversion failed",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			vals, err := convertNamedValues(tc.in)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("convertNamedValues failed: %v", err)
+			}
+			if len(vals) != len(tc.in) {
+				t.Fatalf("len(vals)=%d, want %d", len(vals), len(tc.in))
+			}
+			if _, ok := vals[0].(int64); !ok {
+				t.Fatalf("vals[0] type=%T, want int64", vals[0])
+			}
+		})
 	}
 }
 

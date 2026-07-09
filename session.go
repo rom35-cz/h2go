@@ -2,6 +2,7 @@ package h2go
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"sync"
 )
@@ -49,12 +50,11 @@ func (s *Session) Close() error {
 	return tr.Close()
 }
 
-// ExecuteUpdate executes an update statement (INSERT, UPDATE, DELETE, MERGE)
-// and returns the affected row count. For MVP, this only supports
-// parameterless queries; parameterized queries require Phase 6 (T6.x).
+// ExecuteUpdate executes a parameterless update statement (INSERT, UPDATE,
+// DELETE, MERGE) and returns the affected row count.
 //
 // This method prepares the command, executes it, and closes the command.
-// Use ExecuteUpdatePrepared for reusable prepared statements.
+// For parameterized execution, use ExecuteUpdateWithParams.
 func (s *Session) ExecuteUpdate(ctx context.Context, sql string) (*ResultWithUpdateCount, error) {
 	// Prepare the command
 	cmd, err := s.PrepareCommand(ctx, sql)
@@ -76,49 +76,95 @@ func (s *Session) ExecuteUpdate(ctx context.Context, sql string) (*ResultWithUpd
 	return res, nil
 }
 
-// ExecuteUpdatePrepared executes a pre-prepared update command.
-// For MVP, this only supports parameterless queries.
+// ExecuteUpdateWithParams executes an update statement with positional
+// parameter values and returns the affected row count.
+//
+// It prepares with SESSION_PREPARE_READ_PARAMS2 to obtain parameter metadata
+// and encodes each value with WriteValue using that metadata.
+func (s *Session) ExecuteUpdateWithParams(ctx context.Context, sql string, params []driver.Value) (*ResultWithUpdateCount, error) {
+	cmd, err := s.PrepareCommandReadParams(ctx, sql)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := s.ExecuteUpdatePreparedWithParams(cmd, params)
+	if err != nil {
+		_ = cmd.Close(s)
+		return nil, err
+	}
+
+	_ = cmd.Close(s) // best-effort; ignore close errors
+	return res, nil
+}
+
+// ExecuteUpdatePrepared executes a pre-prepared update command without params.
 func (s *Session) ExecuteUpdatePrepared(cmd *PreparedCommand) (*ResultWithUpdateCount, error) {
+	return s.ExecuteUpdatePreparedWithParams(cmd, nil)
+}
+
+// ExecuteUpdatePreparedWithParams executes a pre-prepared update command with
+// positional parameters.
+func (s *Session) ExecuteUpdatePreparedWithParams(cmd *PreparedCommand, params []driver.Value) (*ResultWithUpdateCount, error) {
+	if s == nil || s.tr == nil {
+		return nil, wrapError("ExecuteUpdatePreparedWithParams", "session closed")
+	}
+	if cmd == nil {
+		return nil, wrapError("ExecuteUpdatePreparedWithParams", "nil command")
+	}
 	if cmd.IsQuery {
-		return nil, wrapError("ExecuteUpdatePrepared", "command is a query, not an update")
+		return nil, wrapError("ExecuteUpdatePreparedWithParams", "command is a query, not an update")
+	}
+
+	if int(cmd.ParamCount) != len(params) {
+		return nil, fmt.Errorf("h2go: ExecuteUpdatePreparedWithParams: expected %d params, got %d",
+			cmd.ParamCount, len(params))
 	}
 
 	// Send COMMAND_EXECUTE_UPDATE
 	if err := s.tr.WriteInt32(CommandExecuteUpdate); err != nil {
-		return nil, wrapError("ExecuteUpdatePrepared", err)
+		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 	if err := s.tr.WriteInt32(cmd.ID); err != nil {
-		return nil, wrapError("ExecuteUpdatePrepared", err)
+		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
-	// Send parameter count (0 for MVP parameterless queries)
-	if err := s.tr.WriteInt32(0); err != nil {
-		return nil, wrapError("ExecuteUpdatePrepared", err)
+	// Send parameter count and parameter values.
+	if err := s.tr.WriteInt32(int32(len(params))); err != nil {
+		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
+	}
+	for i, param := range params {
+		var paramType *TypeInfo
+		if i < len(cmd.Params) {
+			paramType = cmd.Params[i].TypeInfo
+		}
+		if err := s.tr.WriteValue(param, paramType); err != nil {
+			return nil, fmt.Errorf("h2go: ExecuteUpdatePreparedWithParams: encode param %d: %w", i+1, err)
+		}
 	}
 
-	// Send generated keys mode: NONE = 0 for MVP
+	// Send generated keys mode: NONE = 0 for MVP.
 	if err := s.tr.WriteInt32(GeneratedKeysNone); err != nil {
-		return nil, wrapError("ExecuteUpdatePrepared", err)
+		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
 	if err := s.tr.Flush(); err != nil {
-		return nil, wrapError("ExecuteUpdatePrepared", err)
+		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
 	// Read response: status, updateCount (rowCount), autoCommit.
 	// Server: writeInt(status) . writeRowCount(updateCount) . writeBoolean(autoCommit)
 	if err := readStatus(s.tr); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteUpdatePrepared: %w", err)
+		return nil, fmt.Errorf("h2go: ExecuteUpdatePreparedWithParams: %w", err)
 	}
 
 	updateCount, err := s.tr.ReadRowCount()
 	if err != nil {
-		return nil, wrapError("ExecuteUpdatePrepared", err)
+		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
 	autoCommit, err := s.tr.ReadBool()
 	if err != nil {
-		return nil, wrapError("ExecuteUpdatePrepared", err)
+		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
 	s.autoCommit = autoCommit
