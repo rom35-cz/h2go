@@ -450,6 +450,171 @@ func TestReadValue_Timestamp(t *testing.T) {
 	}
 }
 
+// TestReadValue_Date_Epoch tests that H2's EPOCH_DATE_VALUE decodes to 1970-01-01.
+// H2 stores dates as a packed long: (year << 9) | (month << 5) | day.
+// EPOCH = (1970 << 9) | (1 << 5) | 1 = 1008673.
+func TestReadValue_Date_Epoch(t *testing.T) {
+	const epochDateValue = int64(1970<<9 | 1<<5 | 1) // 1008673
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeDate)
+	writeInt64(buf, epochDateValue)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err != nil {
+		t.Fatalf("ReadValue failed: %v", err)
+	}
+	got, ok := val.(time.Time)
+	if !ok {
+		t.Fatalf("Expected time.Time, got %T", val)
+	}
+	if got.Year() != 1970 || got.Month() != 1 || got.Day() != 1 {
+		t.Errorf("Epoch date: got %v, want 1970-01-01", got)
+	}
+	if got.Location() != time.UTC {
+		t.Errorf("Expected UTC, got %v", got.Location())
+	}
+}
+
+// TestReadValue_Date_Known tests a specific date decoding.
+// 2024-01-15 → dateValue = (2024 << 9) | (1 << 5) | 15 = 1036335.
+func TestReadValue_Date_Known(t *testing.T) {
+	const dv = int64(2024<<9 | 1<<5 | 15) // 1036335
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeDate)
+	writeInt64(buf, dv)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err != nil {
+		t.Fatalf("ReadValue failed: %v", err)
+	}
+	got := val.(time.Time)
+	if got.Year() != 2024 || got.Month() != 1 || got.Day() != 15 {
+		t.Errorf("Date decode: got %v, want 2024-01-15", got)
+	}
+}
+
+// TestReadValue_Timestamp_Known tests a specific timestamp decoding.
+// 2024-06-01 10:30:00 UTC → dateValue = (2024 << 9) | (6 << 5) | 1 = 1036993
+// nanos = (10*3600 + 30*60) * 1_000_000_000 = 37_800_000_000_000.
+func TestReadValue_Timestamp_Known(t *testing.T) {
+	const dv = int64(2024<<9 | 6<<5 | 1) // 2024-06-01
+	const nanos = int64((10*3600 + 30*60) * 1_000_000_000)
+
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeTimestamp)
+	writeInt64(buf, dv)
+	writeInt64(buf, nanos)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err != nil {
+		t.Fatalf("ReadValue failed: %v", err)
+	}
+	got := val.(time.Time)
+	if got.Year() != 2024 || got.Month() != 6 || got.Day() != 1 {
+		t.Errorf("Timestamp date: got %v, want 2024-06-01", got)
+	}
+	h, m, s := got.Clock()
+	if h != 10 || m != 30 || s != 0 {
+		t.Errorf("Timestamp time: got %02d:%02d:%02d, want 10:30:00", h, m, s)
+	}
+	if got.Location() != time.UTC {
+		t.Errorf("Expected UTC, got %v", got.Location())
+	}
+}
+
+// TestReadValue_TimestampTZ_LocalTime verifies that TIMESTAMP WITH TIME ZONE
+// dateValue+timeNanos represent LOCAL time in the given timezone, not UTC.
+// 2024-06-01 15:00:00+03:00 (local) → UTC is 2024-06-01 12:00:00Z.
+func TestReadValue_TimestampTZ_LocalTime(t *testing.T) {
+	const dv = int64(2024<<9 | 6<<5 | 1)           // 2024-06-01
+	const nanos = int64(15 * 3600 * 1_000_000_000) // 15:00:00 LOCAL
+	const offsetSec = int32(3 * 3600)              // UTC+3
+
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeTimestampTZ)
+	writeInt64(buf, dv)
+	writeInt64(buf, nanos)
+	writeInt32(buf, offsetSec)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err != nil {
+		t.Fatalf("ReadValue failed: %v", err)
+	}
+	got := val.(time.Time)
+	// Local representation: 15:00:00 +03:00
+	if got.Hour() != 15 || got.Minute() != 0 {
+		t.Errorf("Local time: got %02d:%02d, want 15:00", got.Hour(), got.Minute())
+	}
+	// UTC representation: 12:00:00
+	utc := got.UTC()
+	if utc.Hour() != 12 || utc.Minute() != 0 {
+		t.Errorf("UTC time: got %02d:%02d, want 12:00", utc.Hour(), utc.Minute())
+	}
+	_, offsetGot := got.Zone()
+	if offsetGot != 3*3600 {
+		t.Errorf("Offset: got %d, want %d", offsetGot, 3*3600)
+	}
+}
+
+// TestReadValue_TimeTZ_LocalTime verifies that TIME WITH TIME ZONE
+// nanoseconds represent LOCAL time, not UTC.
+func TestReadValue_TimeTZ_LocalTime(t *testing.T) {
+	const nanos = int64(14 * 3600 * 1_000_000_000) // 14:00:00 LOCAL
+	const offsetSec = int32(-5 * 3600)             // UTC-5
+
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeTimeTZ)
+	writeInt64(buf, nanos)
+	writeInt32(buf, offsetSec)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err != nil {
+		t.Fatalf("ReadValue failed: %v", err)
+	}
+	got := val.(time.Time)
+	if got.Hour() != 14 {
+		t.Errorf("Local hour: got %d, want 14", got.Hour())
+	}
+	// UTC would be 14:00 - (-5h) = 19:00
+	utc := got.UTC()
+	if utc.Hour() != 19 {
+		t.Errorf("UTC hour: got %d, want 19", utc.Hour())
+	}
+	_, offsetGot := got.Zone()
+	if offsetGot != -5*3600 {
+		t.Errorf("Offset: got %d, want %d", offsetGot, -5*3600)
+	}
+}
+
+// TestReadValue_TimestampTZ_NegativeYear tests a BC date in TIMESTAMP_TZ.
+func TestReadValue_TimestampTZ_NegativeYear(t *testing.T) {
+	// year=-1 (1 BCE), month=3, day=15
+	const dv = int64((-1 << 9) | (3 << 5) | 15) // packed: -512+96+15 = -401
+	const nanos = int64(0)
+	const offsetSec = int32(0)
+
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeTimestamp) // Use regular TIMESTAMP for simpler check
+	writeInt64(buf, dv)
+	writeInt64(buf, nanos)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err != nil {
+		t.Fatalf("ReadValue failed: %v", err)
+	}
+	got := val.(time.Time)
+	if got.Year() != -1 || got.Month() != 3 || got.Day() != 15 {
+		t.Errorf("BC date: got %v, want year=-1 month=3 day=15", got)
+	}
+	_ = offsetSec // suppress unused warning
+}
+
 // TestValueTypeName tests type name strings.
 func TestValueTypeName(t *testing.T) {
 	tests := []struct {

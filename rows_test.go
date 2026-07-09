@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"context"
 	"database/sql/driver"
+	"fmt"
 	"io"
+	"net"
 	"testing"
 )
 
@@ -166,13 +168,15 @@ func TestRows_NextResultSet(t *testing.T) {
 	}
 }
 
-// TestRows_Closed tests behavior on closed rows.
+// TestRows_Closed tests behavior on closed rows. Next on a closed result set
+// must report io.EOF (no more rows), not driver.ErrBadConn, which would
+// wrongly mark the underlying connection as dead.
 func TestRows_Closed(t *testing.T) {
 	r := &Rows{closed: true, columnCount: 2}
 
 	err := r.Next(make([]driver.Value, 2))
-	if err != driver.ErrBadConn {
-		t.Errorf("Next on closed: got %v, want ErrBadConn", err)
+	if err != io.EOF {
+		t.Errorf("Next on closed: got %v, want io.EOF", err)
 	}
 }
 
@@ -183,6 +187,24 @@ func TestRows_Next_WrongDestLength(t *testing.T) {
 	err := r.Next(make([]driver.Value, 2))
 	if err == nil {
 		t.Fatal("Expected error for wrong dest length")
+	}
+}
+
+// TestRows_Next_StickyError verifies that once an error is recorded on the
+// Rows (e.g. a mid-stream fetch failure), subsequent Next calls return that
+// same error instead of attempting another RESULT_FETCH_ROWS on a possibly
+// misaligned read stream.
+func TestRows_Next_StickyError(t *testing.T) {
+	sentinel := fmt.Errorf("h2go: mock fetch failure")
+	r := &Rows{
+		columnCount: 2,
+		columns:     &ResultMeta{ColumnCount: 2},
+		rowCount:    -1, // lazy: would normally trigger a fetch
+		err:         sentinel,
+	}
+
+	if err := r.Next(make([]driver.Value, 2)); err != sentinel {
+		t.Errorf("Next with sticky err: got %v, want sentinel", err)
 	}
 }
 
@@ -282,6 +304,99 @@ func TestExecuteQueryPrepared_NotQuery(t *testing.T) {
 	_, err := s.ExecuteQueryPrepared(context.TODO(), cmd, 0, 100)
 	if err == nil {
 		t.Fatal("Expected error for non-query command")
+	}
+}
+
+// TestExecuteQueryPrepared_ReadsStatus verifies that ExecuteQueryPrepared
+// correctly reads the STATUS int before the column count.
+// Regression test for bug where readStatus was missing, causing the
+// status int (1 = STATUS_OK) to be consumed as columnCount.
+// For a 2-column query, STATUS_OK=1 would produce columnCount=1 (wrong).
+func TestExecuteQueryPrepared_ReadsStatus(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		tr := NewReadWriter(serverConn)
+		// Drain the COMMAND_EXECUTE_QUERY request.
+		_, _ = tr.ReadInt32() // op
+		_, _ = tr.ReadInt32() // command id
+		_, _ = tr.ReadInt32() // result id
+		_, _ = tr.ReadInt64() // maxRows
+		_, _ = tr.ReadInt32() // fetchSize
+		_, _ = tr.ReadInt32() // paramCount
+
+		// Write response: STATUS_OK + columnCount=2 + rowCount=0 + 2 column metadata + no rows
+		_ = tr.WriteInt32(StatusOK) // status
+		_ = tr.WriteInt32(2)        // columnCount = 2 (catches the bug: if status consumed as count, we'd get 1)
+		_ = tr.WriteRowCount(0)     // rowCount
+
+		// Column 1: alias="a", schema="", table="", name="a", typeinfo=INTEGER, identity=false, nullable=2
+		for _, alias := range []string{"a", "b"} {
+			_ = tr.WriteString(alias)
+			_ = tr.WriteNullString() // schema
+			_ = tr.WriteNullString() // table
+			_ = tr.WriteNullString() // column name
+			// TypeInfo: TIInteger + no extra bytes
+			_ = tr.WriteInt32(TIInteger)
+			_ = tr.WriteBool(false) // identity
+			_ = tr.WriteInt32(2)    // nullable
+		}
+
+		// End of rows flag
+		_ = tr.WriteByte(0) // flag=0 = end of result
+		if err := tr.Flush(); err != nil {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+		// Drain the RESULT_CLOSE that rows.Close() sends (no server response expected).
+		_, _ = tr.ReadInt32() // op = ResultClose
+		_, _ = tr.ReadInt32() // result id
+	}()
+
+	sess := &Session{tr: NewReadWriter(clientConn), id: "test", version: 21}
+	cmd := &PreparedCommand{
+		ID: 1, SQL: "SELECT a, b FROM t",
+		IsQuery: true, ParamCount: 0,
+	}
+	rows, err := sess.ExecuteQueryPrepared(context.Background(), cmd, 0, 100)
+	if err != nil {
+		<-errCh
+		t.Fatalf("ExecuteQueryPrepared failed: %v", err)
+	}
+	<-errCh // wait for server goroutine to finish writing
+
+	if int(rows.columnCount) != 2 {
+		t.Errorf("columnCount: got %d, want 2", rows.columnCount)
+	}
+	cols := rows.Columns()
+	if len(cols) != 2 || cols[0] != "a" || cols[1] != "b" {
+		t.Errorf("Columns: got %v, want [a b]", cols)
+	}
+	// Close rows — server goroutine drains RESULT_CLOSE.
+	_ = rows.Close()
+}
+
+// TestRows_NoMoreRows_PreventsExtraFetch verifies that after receiving the
+// end-of-result flag (byte 0) in fetchRows, the noMoreRows guard prevents
+// sending an extra RESULT_FETCH_ROWS request to the server.
+func TestRows_NoMoreRows_PreventsExtraFetch(t *testing.T) {
+	// Simulate rows that had all data in the initial batch (flag=0 already seen).
+	r := &Rows{
+		columnCount:  2,
+		columns:      &ResultMeta{Columns: []ResultColumn{{Alias: "x"}, {Alias: "y"}}},
+		rowCount:     -1, // lazy/unknown — no row-count EOF guard
+		bufferedRows: nil,
+		noMoreRows:   true, // flag=0 was already received
+	}
+
+	dest := make([]driver.Value, 2)
+	err := r.Next(dest)
+	if err != io.EOF {
+		t.Errorf("Next after noMoreRows: got %v, want io.EOF", err)
 	}
 }
 

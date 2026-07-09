@@ -5,6 +5,7 @@ package h2go
 import (
 	"bytes"
 	"context"
+	"net"
 	"testing"
 )
 
@@ -152,6 +153,52 @@ func TestSession_PrepareCommandReadParams_ClosedSession(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(err.Error()), []byte("closed")) {
 		t.Errorf("Error message should mention 'closed', got: %v", err)
+	}
+}
+
+// TestPrepareCommandReadParams_ReadsStatus verifies that PrepareCommandReadParams
+// correctly reads the STATUS int before the response fields.
+// Regression test for bug where readStatus was missing, causing the
+// status int to be consumed as isQuery (a bool byte).
+func TestPrepareCommandReadParams_ReadsStatus(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		tr := NewReadWriter(serverConn)
+		// Drain the client's SESSION_PREPARE_READ_PARAMS2 request.
+		_, _ = tr.ReadInt32()  // op
+		_, _ = tr.ReadInt32()  // command id
+		_, _ = tr.ReadString() // sql
+		// Write response: STATUS_OK + isQuery=true + readOnly=false + cmdType=SELECT + paramCount=0
+		_ = tr.WriteInt32(StatusOK)
+		_ = tr.WriteBool(true)
+		_ = tr.WriteBool(false)
+		_ = tr.WriteInt32(CmdSelect)
+		_ = tr.WriteInt32(0)
+		errCh <- tr.Flush()
+	}()
+
+	sess := &Session{tr: NewReadWriter(clientConn), id: "test", version: 21}
+	cmd, err := sess.PrepareCommandReadParams(context.Background(), "SELECT 1")
+	<-errCh
+
+	if err != nil {
+		t.Fatalf("PrepareCommandReadParams failed: %v", err)
+	}
+	if !cmd.IsQuery {
+		t.Error("IsQuery: expected true")
+	}
+	if cmd.ReadOnly {
+		t.Error("ReadOnly: expected false")
+	}
+	if cmd.CmdType != CmdSelect {
+		t.Errorf("CmdType: got %d, want %d", cmd.CmdType, CmdSelect)
+	}
+	if cmd.ParamCount != 0 {
+		t.Errorf("ParamCount: got %d, want 0", cmd.ParamCount)
 	}
 }
 

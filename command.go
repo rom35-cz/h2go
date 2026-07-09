@@ -193,7 +193,11 @@ func (s *Session) PrepareCommandReadParams(ctx context.Context, sql string) (*Pr
 	}
 
 	// Read response
-	// Server sends: isQuery (boolean), readOnly (boolean), cmdType (int), paramCount (int)
+	// Server sends: status, isQuery (boolean), readOnly (boolean), cmdType (int), paramCount (int)
+	if err := readStatus(s.tr); err != nil {
+		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: %w", err)
+	}
+
 	isQuery, err := s.tr.ReadBool()
 	if err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: failed to read isQuery: %w", err)

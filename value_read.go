@@ -275,8 +275,9 @@ func (tr *Tr) readLOBValue(typeCode int32) (driver.Value, error) {
 	return nil, fmt.Errorf("h2go: readLOBValue: inline CLOB not yet implemented")
 }
 
-// lobMagic is the expected magic number after LOB data.
-const lobMagic = 0xFACE
+// lobMagic is the magic number written by H2 after inline LOB data.
+// Reference: Transfer.LOB_MAGIC = 0x1234 in H2 2.4.240.
+const lobMagic = 0x1234
 
 // readDateValue reads a DATE value.
 // H2 stores dates as a "dateValue" (days since 1970-01-01, proleptic Gregorian).
@@ -345,112 +346,35 @@ func (tr *Tr) readTimestampTZValue() (driver.Value, error) {
 }
 
 // Date/time conversion utilities
-// H2 uses a "dateValue" which is days since 1970-01-01 in the proleptic Gregorian calendar.
+//
+// H2 encodes dates as a packed "dateValue" using:
+//
+//	dateValue = (year << SHIFT_YEAR) | (month << SHIFT_MONTH) | day
+//	         = (year << 9)          | (month << 5)           | day
+//
+// where SHIFT_YEAR=9, SHIFT_MONTH=5 (DateTimeUtils.java in H2 2.4.240).
+// This is NOT days since the Unix epoch.
+//
+// For TIMESTAMP, dateValue+timeNanos both represent the UTC instant.
+// For TIMESTAMP WITH TIME ZONE and TIME WITH TIME ZONE, dateValue+timeNanos
+// represent the LOCAL time in the given timezone; the offsetSec converts to UTC.
 
-// dateValueToTime converts an H2 dateValue to time.Time.
-// dateValue is days since 1970-01-01.
+// unpackDateValue extracts year, month, and day from H2's packed date value.
+func unpackDateValue(dateValue int64) (year int, month time.Month, day int) {
+	day = int(dateValue & 0x1F)
+	month = time.Month((dateValue >> 5) & 0x0F)
+	year = int(dateValue >> 9)
+	return
+}
+
+// dateValueToTime converts an H2 packed dateValue to a time.Time (UTC, midnight).
 func dateValueToTime(dateValue int64) time.Time {
-	// Days since unix epoch to days since Go's zero date (0001-01-01)
-	// Unix epoch (1970-01-01) is Go day 719163
-	const unixEpochDay = 719163
-	abs := unixEpochDay + dateValue
-	return time.Date(0, 0, 0, 0, 0, 0, 0, time.UTC).Add(time.Duration(abs) * 24 * time.Hour)
+	y, m, d := unpackDateValue(dateValue)
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-// daysToDate converts an absolute day number to year, month, day.
-// abs is days since 0001-01-01 (Go's zero time reference).
-func daysToDate(abs int64) (year, month, day int) {
-	// Algorithm from Go's time package (absDate)
-	const (
-		daysPer400Years = 400*365 + 97
-		daysPer100Years = 100*365 + 24
-		daysPer4Years   = 4*365 + 1
-	)
-
-	// Account for 2000 years (for dates near 1970)
-	n := abs
-
-	// Century
-	c := int64(0)
-	if n >= daysPer400Years {
-		c = n / daysPer400Years
-		n %= daysPer400Years
-	} else if n < 0 {
-		c = -1 - (-1-n)/daysPer400Years
-		n = -1 - (-1-n)%daysPer400Years
-		if n >= daysPer400Years-365 {
-			n -= daysPer400Years
-			c++
-		}
-	}
-
-	y := 1 + int(c)*400
-
-	// Year within century
-	if n >= daysPer100Years {
-		y += 100
-		n -= daysPer100Years
-		if n >= daysPer100Years {
-			y += 100
-			n -= daysPer100Years
-			if n >= daysPer100Years {
-				y += 100
-				n -= daysPer100Years
-			}
-		}
-	}
-
-	// Year within 4-year cycle
-	if n >= daysPer4Years {
-		y += 4
-		n -= daysPer4Years
-		if n >= daysPer4Years {
-			y += 4
-			n -= daysPer4Years
-		}
-	}
-
-	// Year within single year
-	// Account for leap year
-	leap := isLeapYear(y)
-	if n >= 365+boolInt(leap) {
-		n -= 365 + boolInt(leap)
-		y++
-		leap = isLeapYear(y)
-	}
-
-	// Month and day
-	if leap && n >= 31+29-1 {
-		if n == 31+29-1 {
-			return y, 2, 29
-		}
-		n-- // compensate for Feb 29
-	}
-
-	monthDays := []int{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
-	monthDay := int(n)
-	for m := 0; m < 12; m++ {
-		if monthDay < monthDays[m] {
-			return y, m + 1, monthDay + 1
-		}
-		monthDay -= monthDays[m]
-	}
-
-	return y, 12, 31 // should not reach here
-}
-
-func isLeapYear(year int) bool {
-	return year%4 == 0 && (year%100 != 0 || year%400 == 0)
-}
-
-func boolInt(b bool) int64 {
-	if b {
-		return 1
-	}
-	return 0
-}
-
-// nanosOfDayToTime converts nanoseconds since midnight to a time.Time (date 0000-01-01).
+// nanosOfDayToTime converts nanoseconds since midnight to a time.Time
+// using a zero date (year 0000, Jan 1, UTC).
 func nanosOfDayToTime(nanos int64) time.Time {
 	hour := nanos / (60 * 60 * 1e9)
 	nanos %= 60 * 60 * 1e9
@@ -461,34 +385,45 @@ func nanosOfDayToTime(nanos int64) time.Time {
 	return time.Date(0, 1, 1, int(hour), int(minute), int(sec), int(nsec), time.UTC)
 }
 
-// nanosOfDayToTimeTZ converts nanoseconds + offset to a time.Time with location.
+// nanosOfDayToTimeTZ converts nanoseconds since midnight (LOCAL time) and a UTC
+// offset to a time.Time in the given fixed zone.
 func nanosOfDayToTimeTZ(nanos int64, offsetSec int) time.Time {
-	t := nanosOfDayToTime(nanos)
-	// Apply timezone offset
 	loc := time.FixedZone("", offsetSec)
-	return t.In(loc)
-}
-
-// timestampToTime converts dateValue + nanos to time.Time.
-func timestampToTime(dateValue, nanos int64) time.Time {
-	t := dateValueToTime(dateValue)
-	// Add nanoseconds of day
 	hour := nanos / (60 * 60 * 1e9)
 	nanos %= 60 * 60 * 1e9
 	minute := nanos / (60 * 1e9)
 	nanos %= 60 * 1e9
 	sec := nanos / 1e9
 	nsec := nanos % 1e9
+	return time.Date(0, 1, 1, int(hour), int(minute), int(sec), int(nsec), loc)
+}
 
-	y, m, d := t.Date()
+// timestampToTime converts H2 dateValue + nanoseconds-of-day to a UTC time.Time.
+// Both values represent UTC.
+func timestampToTime(dateValue, nanos int64) time.Time {
+	y, m, d := unpackDateValue(dateValue)
+	hour := nanos / (60 * 60 * 1e9)
+	nanos %= 60 * 60 * 1e9
+	minute := nanos / (60 * 1e9)
+	nanos %= 60 * 1e9
+	sec := nanos / 1e9
+	nsec := nanos % 1e9
 	return time.Date(y, m, d, int(hour), int(minute), int(sec), int(nsec), time.UTC)
 }
 
-// timestampToTimeTZ converts dateValue + nanos + offset to time.Time with location.
+// timestampToTimeTZ converts H2 dateValue + nanoseconds-of-day (LOCAL) and a UTC
+// offset to a time.Time in the given fixed zone.
+// The dateValue and nanos represent LOCAL time in the timezone given by offsetSec.
 func timestampToTimeTZ(dateValue, nanos int64, offsetSec int) time.Time {
-	t := timestampToTime(dateValue, nanos)
 	loc := time.FixedZone("", offsetSec)
-	return t.In(loc)
+	y, m, d := unpackDateValue(dateValue)
+	hour := nanos / (60 * 60 * 1e9)
+	nanos %= 60 * 60 * 1e9
+	minute := nanos / (60 * 1e9)
+	nanos %= 60 * 1e9
+	sec := nanos / 1e9
+	nsec := nanos % 1e9
+	return time.Date(y, m, d, int(hour), int(minute), int(sec), int(nsec), loc)
 }
 
 // valueTypeName returns a human-readable name for a ValueType constant.

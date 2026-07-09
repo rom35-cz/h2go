@@ -40,6 +40,11 @@ type Rows struct {
 	// fetchSize is the number of rows to fetch per request.
 	fetchSize int
 
+	// noMoreRows is set when the server sends the end-of-result flag (byte 0)
+	// during row fetching, indicating the result set is closed server-side.
+	// Once set, no further RESULT_FETCH_ROWS requests must be sent.
+	noMoreRows bool
+
 	// closed indicates if the result set has been closed.
 	closed bool
 
@@ -198,7 +203,9 @@ func (r *Rows) sendCommandClose() error {
 // Returns io.EOF when there are no more rows.
 func (r *Rows) Next(dest []driver.Value) error {
 	if r.closed {
-		return driver.ErrBadConn
+		// A closed result set has no more rows. Returning io.EOF (rather than
+		// driver.ErrBadConn) avoids falsely poisoning the connection pool.
+		return io.EOF
 	}
 	if r.err != nil {
 		return r.err
@@ -215,6 +222,9 @@ func (r *Rows) Next(dest []driver.Value) error {
 		if r.rowCount >= 0 && r.rowOffset >= r.rowCount {
 			return io.EOF
 		}
+		if r.noMoreRows {
+			return io.EOF
+		}
 
 		// Need to fetch more rows
 		fetch := r.fetchSize
@@ -229,6 +239,9 @@ func (r *Rows) Next(dest []driver.Value) error {
 		}
 
 		if err := r.fetchMoreRows(fetch); err != nil {
+			// Make the error sticky: the read stream may now be misaligned, so a
+			// subsequent Next must not issue another RESULT_FETCH_ROWS.
+			r.err = err
 			return err
 		}
 
@@ -308,7 +321,9 @@ func (r *Rows) fetchRows(fetch int) error {
 			r.bufferedRows = append(r.bufferedRows, row)
 
 		case 0:
-			// End of result - server already closed it
+			// End of result — server has already closed the result set.
+			// Record this so Next() does not send another RESULT_FETCH_ROWS.
+			r.noMoreRows = true
 			return nil
 
 		case -1:
@@ -507,6 +522,11 @@ func (s *Session) ExecuteQueryPrepared(ctx context.Context, cmd *PreparedCommand
 	if err := s.tr.WriteInt32(int32(fetchSize)); err != nil {
 		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write fetchSize: %w", err)
 	}
+	// sendParameters: writeInt(paramCount=0) for parameterless execution.
+	// The server's setParameters() always reads the parameter count.
+	if err := s.tr.WriteInt32(0); err != nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write paramCount: %w", err)
+	}
 	if err := s.tr.Flush(); err != nil {
 		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: flush failed: %w", err)
 	}
@@ -518,7 +538,12 @@ func (s *Session) ExecuteQueryPrepared(ctx context.Context, cmd *PreparedCommand
 	default:
 	}
 
-	// Read response: column count
+	// Read response: status then columnCount.
+	// Server: writeInt(status) . writeInt(columnCount) per TcpServerThread.
+	if err := readStatus(s.tr); err != nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: %w", err)
+	}
+
 	columnCount, err := s.tr.ReadInt32()
 	if err != nil {
 		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to read column count: %w", err)

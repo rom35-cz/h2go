@@ -40,7 +40,11 @@ const (
 )
 
 // TI (Type Information) type ID constants for protocol 20+.
-// These are the on-wire type identifiers distinct from ValueType.
+// These are the on-wire type identifiers used in TypeInfo metadata frames,
+// distinct from the ValueType codes used in value frames.
+//
+// Reference: Transfer.java static initialiser (addType calls) in H2 2.4.240.
+// Note the gaps: TI code 18 and 23 are unused in H2.
 const (
 	TIUnknown           = -1
 	TINull              = 0
@@ -61,25 +65,27 @@ const (
 	TIBlob              = 15
 	TIClob              = 16
 	TIArray             = 17
-	TIJavaObject        = 18
-	TIUUID              = 19
-	TIChar              = 20
-	TIGeometry          = 21
-	TITimestampTZ       = 22
-	TIEnum              = 23
-	TIIntervalYear      = 24
-	TIIntervalMonth     = 25
-	TIIntervalDay       = 26
-	TIIntervalHour      = 27
-	TIIntervalMinute    = 28
-	TIIntervalSecond    = 29
-	TIIntervalYearMonth = 30
-	TIIntervalDayHour   = 31
-	TIIntervalDayMinute = 32
-	TIIntervalDaySecond = 33
-	TIIntervalHourMin   = 34
-	TIIntervalHourSec   = 35
-	TIIntervalMinSec    = 36
+	// 18 is unused in H2's TI table.
+	TIJavaObject = 19
+	TIUUID       = 20
+	TIChar       = 21
+	TIGeometry   = 22
+	// 23 is unused in H2's TI table.
+	TITimestampTZ       = 24
+	TIEnum              = 25
+	TIIntervalYear      = 26
+	TIIntervalMonth     = 27
+	TIIntervalDay       = 28
+	TIIntervalHour      = 29
+	TIIntervalMinute    = 30
+	TIIntervalSecond    = 31
+	TIIntervalYearMonth = 32
+	TIIntervalDayHour   = 33
+	TIIntervalDayMinute = 34
+	TIIntervalDaySecond = 35
+	TIIntervalHourMin   = 36
+	TIIntervalHourSec   = 37
+	TIIntervalMinSec    = 38
 	TIRow               = 39
 	TIJSON              = 40
 	TITimeTZ            = 41
@@ -224,9 +230,10 @@ func (tr *Tr) ReadTypeInfo() (*TypeInfo, error) {
 			info.Scale = int(int8(scaleByte))
 		}
 
-	// Interval types with precision and scale
+	// Interval types — leading precision byte always present;
+	// trailing scale byte only for fractional-second variants.
 	case ValueTypeInterval:
-		// Read precision byte
+		// Read leading precision byte (always present for all interval types).
 		precByte, err := tr.ReadByte()
 		if err != nil {
 			return nil, fmt.Errorf("h2go: ReadTypeInfo: failed to read interval precision: %w", err)
@@ -234,13 +241,16 @@ func (tr *Tr) ReadTypeInfo() (*TypeInfo, error) {
 		if precByte != 0xFF {
 			info.Precision = int64(int8(precByte))
 		}
-		// Read scale byte (for some interval types)
-		scaleByte, err := tr.ReadByte()
-		if err != nil {
-			return nil, fmt.Errorf("h2go: ReadTypeInfo: failed to read interval scale: %w", err)
-		}
-		if scaleByte != 0xFF {
-			info.Scale = int(int8(scaleByte))
+		// Trailing scale byte only for fractional-second interval types:
+		// INTERVAL SECOND, DAY TO SECOND, HOUR TO SECOND, MINUTE TO SECOND.
+		if intervalHasFractionalSeconds(int(ti)) {
+			scaleByte, err := tr.ReadByte()
+			if err != nil {
+				return nil, fmt.Errorf("h2go: ReadTypeInfo: failed to read interval scale: %w", err)
+			}
+			if scaleByte != 0xFF {
+				info.Scale = int(int8(scaleByte))
+			}
 		}
 
 	// ARRAY with element count and element type
@@ -333,6 +343,24 @@ func skipExtTypeInfo(tr *Tr, valueType int) error {
 		}
 	}
 	return nil
+}
+
+// intervalHasFractionalSeconds reports whether the given TI code represents an
+// interval type that includes a trailing scale byte (nanosecond precision).
+// Only INTERVAL SECOND, DAY TO SECOND, HOUR TO SECOND, and MINUTE TO SECOND
+// carry both a precision byte and a scale byte in the TypeInfo frame.
+// All other interval types carry only the leading precision byte.
+//
+// Reference: Transfer.java writeTypeInfo20 / readTypeInfo20, H2 2.4.240.
+func intervalHasFractionalSeconds(ti int) bool {
+	switch ti {
+	case TIIntervalSecond, // 31
+		TIIntervalDaySecond, // 35
+		TIIntervalHourSec,   // 37
+		TIIntervalMinSec:    // 38
+		return true
+	}
+	return false
 }
 
 // DatabaseTypeName returns the SQL type name for this TypeInfo.

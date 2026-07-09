@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // loadEnvFromFile reads a simple KEY=value .env file and returns the
@@ -567,6 +568,133 @@ func TestIntegration_QueryLargeResult(t *testing.T) {
 		t.Errorf("expected %d rows, got %d", n, count)
 	}
 	t.Logf("large result: %d rows fetched in batches", count)
+}
+
+// TestIntegration_ScalarTypeDecoding exercises the MVP scalar decode paths
+// end-to-end against a live server. This directly validates the Phase 5
+// review fixes for DATE (Bug A), TIMESTAMP WITH TIME ZONE (Bug B), and the
+// remaining scalar decoders (BOOLEAN, integer widths, REAL/DOUBLE, NUMERIC,
+// UUID, TIME, VARCHAR, VARBINARY), which have unit coverage but were not
+// asserted against a real H2 wire encoding.
+func TestIntegration_ScalarTypeDecoding(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	row := db.QueryRowContext(ctx, `SELECT
+		CAST(TRUE AS BOOLEAN),
+		CAST(42 AS TINYINT),
+		CAST(1234 AS SMALLINT),
+		CAST(70000 AS INTEGER),
+		CAST(9000000000 AS BIGINT),
+		CAST(3.5 AS REAL),
+		CAST(2.718281828 AS DOUBLE PRECISION),
+		CAST(12345.6789 AS NUMERIC(9,4)),
+		CAST('hello world' AS VARCHAR),
+		CAST(X'DEADBEEF' AS VARBINARY),
+		CAST('2021-03-14' AS DATE),
+		CAST('13:37:00' AS TIME),
+		CAST('2021-03-14 15:09:26.535' AS TIMESTAMP),
+		CAST('2021-03-14 15:09:26.535+05:00' AS TIMESTAMP WITH TIME ZONE),
+		CAST('12345678-1234-5678-9abc-def012345678' AS UUID)`)
+
+	var (
+		vBool   bool
+		vTiny   int64
+		vSmall  int64
+		vInt    int64
+		vBig    int64
+		vReal   float64
+		vDouble float64
+		vNum    string
+		vStr    string
+		vBin    []byte
+		vDate   time.Time
+		vTime   time.Time
+		vTs     time.Time
+		vTsTZ   time.Time
+		vUUID   string
+	)
+	if err := row.Scan(&vBool, &vTiny, &vSmall, &vInt, &vBig, &vReal, &vDouble,
+		&vNum, &vStr, &vBin, &vDate, &vTime, &vTs, &vTsTZ, &vUUID); err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+
+	if !vBool {
+		t.Error("BOOLEAN: got false, want true")
+	}
+	if vTiny != 42 || vSmall != 1234 || vInt != 70000 || vBig != 9000000000 {
+		t.Errorf("integers: got %d/%d/%d/%d", vTiny, vSmall, vInt, vBig)
+	}
+	if vReal < 3.49 || vReal > 3.51 {
+		t.Errorf("REAL: got %v, want ~3.5", vReal)
+	}
+	if vDouble < 2.7182 || vDouble > 2.7183 {
+		t.Errorf("DOUBLE: got %v, want ~2.718281828", vDouble)
+	}
+	if vNum != "12345.6789" {
+		t.Errorf("NUMERIC: got %q, want 12345.6789", vNum)
+	}
+	if vStr != "hello world" {
+		t.Errorf("VARCHAR: got %q", vStr)
+	}
+	if fmt.Sprintf("%X", vBin) != "DEADBEEF" {
+		t.Errorf("VARBINARY: got %X, want DEADBEEF", vBin)
+	}
+	// Bug A regression: DATE must unpack the packed dateValue, not treat it
+	// as days-since-epoch.
+	if vDate.Year() != 2021 || vDate.Month() != time.March || vDate.Day() != 14 {
+		t.Errorf("DATE: got %04d-%02d-%02d, want 2021-03-14",
+			vDate.Year(), vDate.Month(), vDate.Day())
+	}
+	if vTime.Hour() != 13 || vTime.Minute() != 37 || vTime.Second() != 0 {
+		t.Errorf("TIME: got %02d:%02d:%02d, want 13:37:00",
+			vTime.Hour(), vTime.Minute(), vTime.Second())
+	}
+	if vTs.Year() != 2021 || vTs.Hour() != 15 || vTs.Minute() != 9 ||
+		vTs.Nanosecond() != 535000000 {
+		t.Errorf("TIMESTAMP: got %v, want 2021-03-14 15:09:26.535", vTs)
+	}
+	// Bug B regression: TIMESTAMP WITH TIME ZONE carries local wall-clock time
+	// plus an offset; the resulting instant must be correct in UTC.
+	_, offset := vTsTZ.Zone()
+	if offset != 5*3600 {
+		t.Errorf("TIMESTAMP_TZ: zone offset got %ds, want 18000s", offset)
+	}
+	wantUTC := time.Date(2021, 3, 14, 10, 9, 26, 535000000, time.UTC)
+	if !vTsTZ.UTC().Equal(wantUTC) {
+		t.Errorf("TIMESTAMP_TZ: UTC instant got %v, want %v", vTsTZ.UTC(), wantUTC)
+	}
+	if vUUID != "12345678-1234-5678-9abc-def012345678" {
+		t.Errorf("UUID: got %q", vUUID)
+	}
+	t.Log("scalar type decoding passed")
+}
+
+// TestIntegration_NullDecoding verifies NULL values decode to nil across types.
+func TestIntegration_NullDecoding(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	row := db.QueryRowContext(ctx,
+		"SELECT CAST(NULL AS INTEGER), CAST(NULL AS VARCHAR), CAST(NULL AS TIMESTAMP)")
+	var i sql.NullInt64
+	var s sql.NullString
+	var ts sql.NullTime
+	if err := row.Scan(&i, &s, &ts); err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if i.Valid || s.Valid || ts.Valid {
+		t.Errorf("expected all NULL, got int=%v str=%v ts=%v", i, s, ts)
+	}
+	t.Log("null decoding passed")
 }
 
 // integrationDB opens a *sql.DB from env credentials and registers a cleanup.

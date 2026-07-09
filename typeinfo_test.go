@@ -261,6 +261,92 @@ func TestReadTypeInfo_UnknownTypeCode(t *testing.T) {
 	}
 }
 
+// TestReadTypeInfo_IntervalYear_OneByte verifies that INTERVAL YEAR TypeInfo
+// reads exactly 1 precision byte (no trailing scale byte).
+// Confirmed by H2 Transfer.java writeTypeInfo20: non-fractional-second interval
+// types write only writeBytePrecisionWithDefault.
+func TestReadTypeInfo_IntervalYear_OneByte(t *testing.T) {
+	buf := new(bytes.Buffer)
+	writeInt32(buf, TIIntervalYear) // TI code 26
+	writeByte(buf, 2)               // precision byte
+	// Do NOT write a scale byte — only 1 byte is expected.
+
+	tr := mockTransfer(buf.Bytes())
+	info, err := tr.ReadTypeInfo()
+	if err != nil {
+		t.Fatalf("ReadTypeInfo INTERVAL YEAR failed: %v", err)
+	}
+	if info.ValueType != ValueTypeInterval {
+		t.Errorf("ValueType: got %d, want ValueTypeInterval", info.ValueType)
+	}
+	if info.Precision != 2 {
+		t.Errorf("Precision: got %d, want 2", info.Precision)
+	}
+	if info.Scale != -1 {
+		t.Errorf("Scale: got %d, want -1 (no scale for INTERVAL YEAR)", info.Scale)
+	}
+}
+
+// TestReadTypeInfo_IntervalSecond_TwoBytes verifies that INTERVAL SECOND
+// TypeInfo reads both a precision byte and a scale byte.
+func TestReadTypeInfo_IntervalSecond_TwoBytes(t *testing.T) {
+	buf := new(bytes.Buffer)
+	writeInt32(buf, TIIntervalSecond) // TI code 31
+	writeByte(buf, 4)                 // precision byte
+	writeByte(buf, 6)                 // scale byte
+
+	tr := mockTransfer(buf.Bytes())
+	info, err := tr.ReadTypeInfo()
+	if err != nil {
+		t.Fatalf("ReadTypeInfo INTERVAL SECOND failed: %v", err)
+	}
+	if info.ValueType != ValueTypeInterval {
+		t.Errorf("ValueType: got %d, want ValueTypeInterval", info.ValueType)
+	}
+	if info.Precision != 4 {
+		t.Errorf("Precision: got %d, want 4", info.Precision)
+	}
+	if info.Scale != 6 {
+		t.Errorf("Scale: got %d, want 6", info.Scale)
+	}
+}
+
+// TestTIConstants_MatchH2 verifies critical TI code constants against their
+// known H2 2.4.240 values from Transfer.java.
+func TestTIConstants_MatchH2(t *testing.T) {
+	tests := []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"TINull", TINull, 0},
+		{"TIBoolean", TIBoolean, 1},
+		{"TIVarchar", TIVarchar, 13},
+		{"TIJavaObject", TIJavaObject, 19},
+		{"TIUUID", TIUUID, 20},
+		{"TIChar", TIChar, 21},
+		{"TIGeometry", TIGeometry, 22},
+		// 23 is unused in H2
+		{"TITimestampTZ", TITimestampTZ, 24},
+		{"TIEnum", TIEnum, 25},
+		{"TIIntervalYear", TIIntervalYear, 26},
+		{"TIIntervalSecond", TIIntervalSecond, 31},
+		{"TIIntervalDaySecond", TIIntervalDaySecond, 35},
+		{"TIIntervalHourSec", TIIntervalHourSec, 37},
+		{"TIIntervalMinSec", TIIntervalMinSec, 38},
+		{"TIRow", TIRow, 39},
+		{"TIJSON", TIJSON, 40},
+		{"TITimeTZ", TITimeTZ, 41},
+		{"TIBinary", TIBinary, 42},
+		{"TIDecfloat", TIDecfloat, 43},
+	}
+	for _, tc := range tests {
+		if tc.got != tc.want {
+			t.Errorf("%s = %d, want %d", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
 // TestTypeInfo_DatabaseTypeName tests type name strings.
 func TestTypeInfo_DatabaseTypeName(t *testing.T) {
 	tests := []struct {
