@@ -117,7 +117,12 @@ func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (drive
 	if closeErr != nil {
 		return nil, closeErr
 	}
-	return &result{affected: res.UpdateCount}, nil
+	return &result{
+		affected:        res.UpdateCount,
+		lastInsertID:    res.LastInsertID,
+		lastInsertIDSet: res.LastInsertIDSet,
+		lastInsertErr:   res.LastInsertErr,
+	}, nil
 }
 
 // QueryContext executes the prepared statement as a query.

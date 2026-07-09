@@ -304,7 +304,12 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		return nil, err
 	}
 
-	return &result{affected: res.UpdateCount}, nil
+	return &result{
+		affected:        res.UpdateCount,
+		lastInsertID:    res.LastInsertID,
+		lastInsertIDSet: res.LastInsertIDSet,
+		lastInsertErr:   res.LastInsertErr,
+	}, nil
 }
 
 // CheckNamedValue validates and normalizes one argument for this connection.

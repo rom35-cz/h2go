@@ -462,16 +462,32 @@ func TestResultRowsAffected(t *testing.T) {
 	}
 }
 
-// TestResultLastInsertId verifies result.LastInsertId returns an error
-// (not supported in MVP).
+// TestResultLastInsertId verifies the zero-value result reports an
+// unavailable generated-key error.
 func TestResultLastInsertId(t *testing.T) {
 	r := &result{affected: 0}
 
 	id, err := r.LastInsertId()
 	if err == nil {
-		t.Error("expected error for LastInsertId in MVP")
+		t.Fatal("expected error for LastInsertId when no key was recorded")
+	}
+	if !errors.Is(err, ErrLastInsertIDUnavailable) {
+		t.Fatalf("expected ErrLastInsertIDUnavailable, got %v", err)
 	}
 	if id != 0 {
 		t.Errorf("expected 0, got %d", id)
+	}
+}
+
+// TestResultLastInsertIdSuccess verifies a recorded generated key is returned.
+func TestResultLastInsertIdSuccess(t *testing.T) {
+	r := &result{affected: 1, lastInsertID: 123, lastInsertIDSet: true}
+
+	id, err := r.LastInsertId()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != 123 {
+		t.Fatalf("expected 123, got %d", id)
 	}
 }

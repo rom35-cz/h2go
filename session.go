@@ -3,6 +3,7 @@ package h2go
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -14,6 +15,10 @@ import (
 type ResultWithUpdateCount struct {
 	UpdateCount int64
 	AutoCommit  bool
+
+	LastInsertID    int64
+	LastInsertIDSet bool
+	LastInsertErr   error
 }
 
 // Session holds an authenticated H2 TCP session.
@@ -252,8 +257,10 @@ func (s *Session) ExecuteUpdatePreparedWithParams(ctx context.Context, cmd *Prep
 		}
 	}
 
-	// Send generated keys mode: NONE = 0 for MVP.
-	if err = s.tr.WriteInt32(GeneratedKeysNone); err != nil {
+	// Request generated keys so Result.LastInsertId can be populated when H2
+	// returns exactly one numeric generated key. The helper below will consume
+	// the generated-keys result and convert it into a driver.Result field.
+	if err = s.tr.WriteInt32(GeneratedKeysAuto); err != nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
@@ -279,10 +286,23 @@ func (s *Session) ExecuteUpdatePreparedWithParams(ctx context.Context, cmd *Prep
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
+	lastInsertID, err := s.readGeneratedKeysLastInsertID()
+	lastInsertErr := error(nil)
+	if err != nil {
+		if errors.Is(err, ErrLastInsertIDUnavailable) {
+			lastInsertErr = err
+		} else {
+			return nil, err
+		}
+	}
+
 	s.autoCommit = autoCommit
 
 	return &ResultWithUpdateCount{
-		UpdateCount: updateCount,
-		AutoCommit:  autoCommit,
+		UpdateCount:     updateCount,
+		AutoCommit:      autoCommit,
+		LastInsertID:    lastInsertID,
+		LastInsertIDSet: lastInsertErr == nil,
+		LastInsertErr:   lastInsertErr,
 	}, nil
 }

@@ -534,6 +534,72 @@ func TestIntegration_ExecContext(t *testing.T) {
 	t.Log("DROP TABLE OK")
 }
 
+// TestIntegration_ExecContextLastInsertId verifies generated keys are exposed
+// through Result.LastInsertId() for single numeric keys, and remain
+// unavailable for non-numeric keys.
+func TestIntegration_ExecContextLastInsertId(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS t65_lastid_num (
+		id BIGINT AUTO_INCREMENT PRIMARY KEY,
+		note VARCHAR(100)
+	)`)
+	if err != nil {
+		t.Fatalf("CREATE numeric-key table failed: %v", err)
+	}
+	defer func() { _, _ = db.ExecContext(ctx, "DROP TABLE IF EXISTS t65_lastid_num") }()
+	_, _ = db.ExecContext(ctx, "DELETE FROM t65_lastid_num")
+
+	res, err := db.ExecContext(ctx, "INSERT INTO t65_lastid_num (note) VALUES (?)", "first")
+	if err != nil {
+		t.Fatalf("numeric-key INSERT failed: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId numeric-key: %v", err)
+	}
+	if id <= 0 {
+		t.Fatalf("numeric-key LastInsertId=%d, want > 0", id)
+	}
+	var note string
+	if err := db.QueryRowContext(ctx, "SELECT note FROM t65_lastid_num WHERE id = ?", id).Scan(&note); err != nil {
+		t.Fatalf("verify numeric generated key failed: %v", err)
+	}
+	if note != "first" {
+		t.Fatalf("verify numeric generated key note=%q, want first", note)
+	}
+
+	_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS t65_lastid_text (
+		id VARCHAR(40) PRIMARY KEY,
+		note VARCHAR(100)
+	)`)
+	if err != nil {
+		t.Fatalf("CREATE non-numeric-key table failed: %v", err)
+	}
+	defer func() { _, _ = db.ExecContext(ctx, "DROP TABLE IF EXISTS t65_lastid_text") }()
+	_, _ = db.ExecContext(ctx, "DELETE FROM t65_lastid_text")
+
+	res, err = db.ExecContext(ctx, "INSERT INTO t65_lastid_text (id, note) VALUES (?, ?)", "alpha", "second")
+	if err != nil {
+		t.Fatalf("non-numeric-key INSERT failed: %v", err)
+	}
+	id, err = res.LastInsertId()
+	if err == nil {
+		t.Fatal("expected LastInsertId error for non-numeric generated key")
+	}
+	if !errors.Is(err, ErrLastInsertIDUnavailable) {
+		t.Fatalf("expected ErrLastInsertIDUnavailable, got %v", err)
+	}
+	if id != 0 {
+		t.Fatalf("non-numeric-key LastInsertId=%d, want 0", id)
+	}
+}
+
 // TestIntegration_ExecContextWithParams validates positional parameter binding
 // for ExecContext using T6.1 value encoding (including metadata-aware NUMERIC
 // and UUID string handling).

@@ -4,22 +4,36 @@ package h2go
 
 import (
 	"database/sql/driver"
-	"errors"
+	"fmt"
 )
 
 // result implements driver.Result for H2 exec operations.
 type result struct {
 	affected int64
-	// lastID is not supported in MVP; see Phase 10 for generated keys support.
+
+	lastInsertID    int64
+	lastInsertIDSet bool
+	lastInsertErr   error
 }
 
-// LastInsertId returns an error indicating generated keys are not
-// supported in the MVP. This method will be implemented in Phase 10
-// (T10.1) when full generated keys support is added.
+// LastInsertId returns the generated key when H2 returned exactly one numeric
+// generated key for the statement.
+//
+// When H2 returned no key, multiple keys, or a non-numeric key, the returned
+// error wraps ErrLastInsertIDUnavailable.
 //
 // LastInsertId implements driver.Result.
 func (r *result) LastInsertId() (int64, error) {
-	return 0, errors.New("h2go: LastInsertId not supported in MVP (coming in Phase 10)")
+	if r == nil {
+		return 0, fmt.Errorf("h2go: LastInsertId: %w", ErrLastInsertIDUnavailable)
+	}
+	if !r.lastInsertIDSet {
+		if r.lastInsertErr != nil {
+			return 0, r.lastInsertErr
+		}
+		return 0, fmt.Errorf("h2go: LastInsertId: %w", ErrLastInsertIDUnavailable)
+	}
+	return r.lastInsertID, nil
 }
 
 // RowsAffected returns the number of rows affected by the

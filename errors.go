@@ -153,4 +153,7 @@ var (
 	ErrUnsupportedType = errors.New("unsupported H2 type")
 	// ErrClosed reports that the server/session connection has been closed.
 	ErrClosed = errors.New("connection closed")
+	// ErrLastInsertIDUnavailable reports that a statement did not return a
+	// single numeric generated key suitable for driver.Result.LastInsertId().
+	ErrLastInsertIDUnavailable = errors.New("last insert id unavailable")
 )

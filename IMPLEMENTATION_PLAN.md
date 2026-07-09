@@ -712,7 +712,13 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Request generated keys on inserts where applicable; read the returned result.
   - Expose the first key as `LastInsertId()` when it is a single numeric value; otherwise return a clear unavailable/unsupported error (PRD §7.7, §12.8).
 - **Deliverables:** generated-keys code, integration tests (auto-increment insert returns id; composite/non-numeric returns documented error).
+- **Implementation notes:**
+  - `ExecuteUpdatePreparedWithParams` now requests `GeneratedKeysAuto` and consumes the returned generated-keys result in the same protocol response, so `database/sql` callers can receive `Result.LastInsertId()` without a separate API.
+  - Added `readGeneratedKeysLastInsertID()` to drain H2's generated-keys result set after the update count/autocommit frame and to extract exactly one numeric key when H2 returns a single-column, single-row result.
+  - `result` now stores both the update count and generated-key state; zero-value results still report a clear unavailable error via `ErrLastInsertIDUnavailable`.
+  - Added live integration coverage for a numeric `AUTO_INCREMENT` table and a non-numeric primary-key table; numeric inserts return the generated id, while non-numeric keys return the documented unavailable error.
 - **Done when:** `LastInsertId()` returns the id for numeric single-key inserts; documented error otherwise.
+- **Status:** ✅ Done — 2026-07-09
 
 ### T10.2 Column type metadata interfaces
 - **Goal:** Expose H2 column metadata to `database/sql`.
