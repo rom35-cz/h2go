@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1020,6 +1021,95 @@ func TestIntegration_NullDecoding(t *testing.T) {
 		t.Errorf("expected all NULL, got int=%v str=%v ts=%v", i, s, ts)
 	}
 	t.Log("null decoding passed")
+}
+
+// TestIntegration_ColumnTypes verifies the database/sql ColumnTypes metadata
+// mirrors the H2 wire metadata for names, types, lengths, precision/scale, and
+// scan type hints.
+func TestIntegration_ColumnTypes(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	table := integrationTxTableName("metadata")
+	_, err := db.ExecContext(ctx, `CREATE TABLE `+table+` (
+		id BIGINT PRIMARY KEY,
+		active BOOLEAN NOT NULL,
+		name VARCHAR(42),
+		amount NUMERIC(12,4),
+		created TIMESTAMP(6),
+		payload VARBINARY(16),
+		uid UUID
+	)`)
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer func() { _, _ = db.ExecContext(ctx, "DROP TABLE IF EXISTS "+table) }()
+
+	rows, err := db.QueryContext(ctx, "SELECT id, active, name, amount, created, payload, uid FROM "+table+" WHERE 1=0")
+	if err != nil {
+		t.Fatalf("QueryContext failed: %v", err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.ColumnTypes()
+	if err != nil {
+		t.Fatalf("ColumnTypes failed: %v", err)
+	}
+	if len(cols) != 7 {
+		t.Fatalf("len(ColumnTypes)=%d, want 7", len(cols))
+	}
+
+	tests := []struct {
+		name      string
+		wantType  string
+		wantScan  reflect.Type
+		wantLen   int64
+		wantPrec  int64
+		wantScale int64
+	}{
+		{"ID", "BIGINT", reflect.TypeOf(int64(0)), 0, 0, 0},
+		{"ACTIVE", "BOOLEAN", reflect.TypeOf(true), 0, 0, 0},
+		{"NAME", "VARCHAR", reflect.TypeOf(""), 42, 0, 0},
+		{"AMOUNT", "NUMERIC", reflect.TypeOf(""), 0, 12, 4},
+		{"CREATED", "TIMESTAMP", reflect.TypeOf(time.Time{}), 0, 0, 6},
+		{"PAYLOAD", "VARBINARY", reflect.TypeOf([]byte(nil)), 16, 0, 0},
+		{"UID", "UUID", reflect.TypeOf(""), 0, 0, 0},
+	}
+
+	for i, tc := range tests {
+		ct := cols[i]
+		if got := ct.Name(); got != tc.name {
+			t.Fatalf("column %d name=%q, want %q", i, got, tc.name)
+		}
+		if got := ct.DatabaseTypeName(); got != tc.wantType {
+			t.Fatalf("column %d type=%q, want %q", i, got, tc.wantType)
+		}
+		if got := ct.ScanType(); got != tc.wantScan {
+			t.Fatalf("column %d scan type=%v, want %v", i, got, tc.wantScan)
+		}
+		if tc.wantLen > 0 {
+			gotLen, ok := ct.Length()
+			if !ok || gotLen != tc.wantLen {
+				t.Fatalf("column %d length=(%d,%v), want (%d,true)", i, gotLen, ok, tc.wantLen)
+			}
+		}
+		if tc.wantPrec > 0 || tc.wantScale > 0 {
+			prec, scale, ok := ct.DecimalSize()
+			if !ok || prec != tc.wantPrec || scale != tc.wantScale {
+				t.Fatalf("column %d DecimalSize=(%d,%d,%v), want (%d,%d,true)", i, prec, scale, ok, tc.wantPrec, tc.wantScale)
+			}
+		}
+		nullable, ok := ct.Nullable()
+		if ok {
+			t.Logf("column %d nullable=%v", i, nullable)
+		} else {
+			t.Logf("column %d nullable unavailable", i)
+		}
+	}
 }
 
 // integrationTxTableName returns a unique, unquoted table name for transaction tests.

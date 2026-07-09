@@ -4,7 +4,9 @@ package h2go
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
+	"time"
 )
 
 // mockTransfer creates a Tr that reads from the provided bytes.
@@ -419,11 +421,45 @@ func TestTypeInfo_PrecisionScale(t *testing.T) {
 		t.Errorf("PrecisionScale: got (%d, %d), want (15, 5)", prec, scale)
 	}
 
+	// TIMESTAMP WITH TIME ZONE exposes fractional-second scale.
+	info = &TypeInfo{ValueType: ValueTypeTimestampTZ, Precision: -1, Scale: 6}
+	prec, scale, ok = info.PrecisionScale()
+	if !ok {
+		t.Error("Expected ok=true for TIMESTAMP WITH TIME ZONE")
+	}
+	if prec != 0 || scale != 6 {
+		t.Errorf("PrecisionScale: got (%d, %d), want (0, 6)", prec, scale)
+	}
+
 	// INTEGER - no precision/scale
 	info = &TypeInfo{ValueType: ValueTypeInteger, Precision: 10, Scale: 0}
 	_, _, ok = info.PrecisionScale()
 	if ok {
 		t.Error("Expected ok=false for INTEGER")
+	}
+}
+
+// TestTypeInfo_ScanType tests the Go type hints reported for scanned values.
+func TestTypeInfo_ScanType(t *testing.T) {
+	tests := []struct {
+		name string
+		info *TypeInfo
+		want reflect.Type
+	}{
+		{"bool", &TypeInfo{ValueType: ValueTypeBoolean}, reflect.TypeOf(true)},
+		{"int64", &TypeInfo{ValueType: ValueTypeBigint}, reflect.TypeOf(int64(0))},
+		{"float64", &TypeInfo{ValueType: ValueTypeDouble}, reflect.TypeOf(float64(0))},
+		{"string-varchar", &TypeInfo{ValueType: ValueTypeVarchar}, reflect.TypeOf("")},
+		{"string-numeric", &TypeInfo{ValueType: ValueTypeNumeric}, reflect.TypeOf("")},
+		{"bytes", &TypeInfo{ValueType: ValueTypeVarbinary}, reflect.TypeOf([]byte(nil))},
+		{"time", &TypeInfo{ValueType: ValueTypeTimestampTZ}, reflect.TypeOf(time.Time{})},
+		{"any-unsupported", &TypeInfo{ValueType: ValueTypeArray}, reflect.TypeOf((*any)(nil)).Elem()},
+	}
+
+	for _, tc := range tests {
+		if got := tc.info.ScanType(); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

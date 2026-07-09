@@ -726,7 +726,13 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Implement on `rows`: `RowsColumnTypeDatabaseTypeName`, `RowsColumnTypeLength`, `RowsColumnTypeNullable`, `RowsColumnTypePrecisionScale`, `RowsColumnTypeScanType`.
   - Map H2 type codes → database type names and Go scan types.
 - **Deliverables:** metadata methods, tests via `sql.Rows.ColumnTypes()`.
+- **Implementation notes:**
+  - Added `Rows.ColumnTypeScanType()` and a `TypeInfo.ScanType()` helper so the driver exposes concrete Go hints that match the actual decoded `driver.Value` shapes for supported H2 types (`bool`, `int64`, `float64`, `string`, `[]byte`, `time.Time`); unknown/unsupported complex types fall back to `interface{}`.
+  - Extended precision/scale metadata to cover H2 time/timestamp types as well as numeric types, so `sql.ColumnType.DecimalSize()` can report fractional-second scale for `TIME`/`TIMESTAMP` families where H2 provides it.
+  - Hardened the metadata accessors to be nil-safe when `Rows` or `ResultMeta` is absent, which keeps `database/sql` column introspection from panicking on early-close or partially constructed rows.
+  - Added unit tests for `TypeInfo.ScanType()`, `Rows.ColumnTypeScanType()`, and time-based precision/scale handling, plus a live integration test that checks `sql.Rows.ColumnTypes()` against a real H2 table for type names, length, precision/scale, and scan hints.
 - **Done when:** `ColumnTypes()` reports correct names/nullability/precision/scale/scan types for MVP types.
+- **Status:** ✅ Done — 2026-07-09
 
 ---
 

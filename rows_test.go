@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"testing"
+	"time"
 )
 
 // TestRows_Columns tests the Columns() method.
@@ -132,6 +134,7 @@ func TestRows_ColumnTypePrecisionScale(t *testing.T) {
 	meta := &ResultMeta{
 		Columns: []ResultColumn{
 			{Alias: "price", TypeInfo: &TypeInfo{ValueType: ValueTypeNumeric, Precision: 10, Scale: 2}},
+			{Alias: "created", TypeInfo: &TypeInfo{ValueType: ValueTypeTimestampTZ, Precision: -1, Scale: 6}},
 			{Alias: "count", TypeInfo: &TypeInfo{ValueType: ValueTypeInteger}},
 		},
 	}
@@ -147,10 +150,54 @@ func TestRows_ColumnTypePrecisionScale(t *testing.T) {
 		t.Errorf("ColumnTypePrecisionScale(0): prec=%d, scale=%d, want 10, 2", prec, scale)
 	}
 
+	// TIMESTAMP WITH TIME ZONE should expose fractional-second scale.
+	prec, scale, ok = r.ColumnTypePrecisionScale(1)
+	if !ok {
+		t.Error("ColumnTypePrecisionScale(1): expected ok=true for TIMESTAMP WITH TIME ZONE")
+	}
+	if prec != 0 || scale != 6 {
+		t.Errorf("ColumnTypePrecisionScale(1): prec=%d, scale=%d, want 0, 6", prec, scale)
+	}
+
 	// INTEGER should not have precision/scale
-	_, _, ok = r.ColumnTypePrecisionScale(1)
+	_, _, ok = r.ColumnTypePrecisionScale(2)
 	if ok {
-		t.Error("ColumnTypePrecisionScale(1): expected ok=false for INTEGER")
+		t.Error("ColumnTypePrecisionScale(2): expected ok=false for INTEGER")
+	}
+}
+
+// TestRows_ColumnTypeScanType tests Go scan type hints for supported columns.
+func TestRows_ColumnTypeScanType(t *testing.T) {
+	meta := &ResultMeta{
+		Columns: []ResultColumn{
+			{Alias: "flag", TypeInfo: &TypeInfo{ValueType: ValueTypeBoolean}},
+			{Alias: "id", TypeInfo: &TypeInfo{ValueType: ValueTypeBigint}},
+			{Alias: "amount", TypeInfo: &TypeInfo{ValueType: ValueTypeDouble}},
+			{Alias: "name", TypeInfo: &TypeInfo{ValueType: ValueTypeVarchar}},
+			{Alias: "payload", TypeInfo: &TypeInfo{ValueType: ValueTypeVarbinary}},
+			{Alias: "created", TypeInfo: &TypeInfo{ValueType: ValueTypeTimestamp}},
+			{Alias: "unsupported", TypeInfo: &TypeInfo{ValueType: ValueTypeArray}},
+		},
+	}
+
+	r := &Rows{columns: meta}
+	tests := []struct {
+		index int
+		want  reflect.Type
+	}{
+		{0, reflect.TypeOf(true)},
+		{1, reflect.TypeOf(int64(0))},
+		{2, reflect.TypeOf(float64(0))},
+		{3, reflect.TypeOf("")},
+		{4, reflect.TypeOf([]byte(nil))},
+		{5, reflect.TypeOf(time.Time{})},
+		{6, reflect.TypeOf((*any)(nil)).Elem()},
+	}
+
+	for _, tc := range tests {
+		if got := r.ColumnTypeScanType(tc.index); got != tc.want {
+			t.Errorf("ColumnTypeScanType(%d): got %v, want %v", tc.index, got, tc.want)
+		}
 	}
 }
 

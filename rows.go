@@ -9,6 +9,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"reflect"
 )
 
 // Rows implements driver.Rows for H2 result sets.
@@ -368,6 +369,9 @@ func (r *Rows) NextResultSet() error {
 // ColumnTypeDatabaseTypeName returns the database type name for a column.
 // This is part of the driver.RowsColumnTypeDatabaseTypeName interface (optional).
 func (r *Rows) ColumnTypeDatabaseTypeName(index int) string {
+	if r == nil || r.columns == nil {
+		return ""
+	}
 	col := r.columns.GetColumn(index)
 	if col == nil || col.TypeInfo == nil {
 		return ""
@@ -378,6 +382,9 @@ func (r *Rows) ColumnTypeDatabaseTypeName(index int) string {
 // ColumnTypeNullable returns the nullability for a column.
 // This is part of the driver.RowsColumnTypeNullable interface (optional).
 func (r *Rows) ColumnTypeNullable(index int) (nullable, ok bool) {
+	if r == nil || r.columns == nil {
+		return false, false
+	}
 	col := r.columns.GetColumn(index)
 	if col == nil {
 		return false, false
@@ -395,6 +402,9 @@ func (r *Rows) ColumnTypeNullable(index int) (nullable, ok bool) {
 // ColumnTypeLength returns the length for variable-length types.
 // This is part of the driver.RowsColumnTypeLength interface (optional).
 func (r *Rows) ColumnTypeLength(index int) (length int64, ok bool) {
+	if r == nil || r.columns == nil {
+		return 0, false
+	}
 	col := r.columns.GetColumn(index)
 	if col == nil || col.TypeInfo == nil {
 		return 0, false
@@ -413,11 +423,27 @@ func (r *Rows) ColumnTypeLength(index int) (length int64, ok bool) {
 // ColumnTypePrecisionScale returns precision and scale for numeric types.
 // This is part of the driver.RowsColumnTypePrecisionScale interface (optional).
 func (r *Rows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok bool) {
+	if r == nil || r.columns == nil {
+		return 0, 0, false
+	}
 	col := r.columns.GetColumn(index)
 	if col == nil || col.TypeInfo == nil {
 		return 0, 0, false
 	}
 	return col.TypeInfo.PrecisionScale()
+}
+
+// ColumnTypeScanType returns a Go type hint for scanning values from this
+// column.
+func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
+	if r == nil || r.columns == nil {
+		return scanTypeAny
+	}
+	col := r.columns.GetColumn(index)
+	if col == nil || col.TypeInfo == nil {
+		return scanTypeAny
+	}
+	return col.TypeInfo.ScanType()
 }
 
 // ExecuteQuery executes a query and returns the result set rows.
@@ -613,3 +639,13 @@ func (s *Session) executeQueryWire(ctx context.Context, cmd *PreparedCommand, ma
 	rows.contextCleanup = cleanup
 	return rows, nil
 }
+
+var (
+	_ driver.Rows                           = (*Rows)(nil)
+	_ driver.RowsColumnTypeDatabaseTypeName = (*Rows)(nil)
+	_ driver.RowsColumnTypeLength           = (*Rows)(nil)
+	_ driver.RowsColumnTypeNullable         = (*Rows)(nil)
+	_ driver.RowsColumnTypePrecisionScale   = (*Rows)(nil)
+	_ driver.RowsColumnTypeScanType         = (*Rows)(nil)
+	_ driver.RowsNextResultSet              = (*Rows)(nil)
+)

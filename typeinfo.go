@@ -6,6 +6,8 @@ package h2go
 
 import (
 	"fmt"
+	"reflect"
+	"time"
 )
 
 // TypeInfo represents H2 column/parameter type metadata.
@@ -435,7 +437,8 @@ func (ti *TypeInfo) DatabaseTypeName() string {
 // HasPrecisionScale reports whether this type has precision/scale attributes.
 func (ti *TypeInfo) HasPrecisionScale() bool {
 	switch ti.ValueType {
-	case ValueTypeNumeric, ValueTypeDecfloat:
+	case ValueTypeNumeric, ValueTypeDecfloat,
+		ValueTypeTime, ValueTypeTimeTZ, ValueTypeTimestamp, ValueTypeTimestampTZ:
 		return true
 	default:
 		return false
@@ -445,11 +448,58 @@ func (ti *TypeInfo) HasPrecisionScale() bool {
 // PrecisionScale returns the precision and scale for this type.
 // If the type doesn't have precision/scale, returns (0, 0, false).
 func (ti *TypeInfo) PrecisionScale() (precision, scale int64, ok bool) {
-	if !ti.HasPrecisionScale() {
+	if ti == nil || !ti.HasPrecisionScale() {
 		return 0, 0, false
 	}
-	if ti.Precision < 0 {
-		return 0, 0, true
+	switch ti.ValueType {
+	case ValueTypeNumeric, ValueTypeDecfloat:
+		if ti.Precision < 0 {
+			return 0, 0, true
+		}
+		return ti.Precision, int64(ti.Scale), true
+	case ValueTypeTime, ValueTypeTimeTZ, ValueTypeTimestamp, ValueTypeTimestampTZ:
+		if ti.Scale < 0 {
+			return 0, 0, true
+		}
+		return 0, int64(ti.Scale), true
+	default:
+		return 0, 0, false
 	}
-	return ti.Precision, int64(ti.Scale), true
 }
+
+// ScanType returns a reasonable Go scan type hint for values of this H2 type.
+// The returned type mirrors the driver's actual driver.Value decoding when the
+// type is currently supported, and falls back to interface{} for unknown or
+// unsupported complex types.
+func (ti *TypeInfo) ScanType() reflect.Type {
+	if ti == nil {
+		return scanTypeAny
+	}
+	switch ti.ValueType {
+	case ValueTypeBoolean:
+		return scanTypeBool
+	case ValueTypeTinyint, ValueTypeSmallint, ValueTypeInteger, ValueTypeBigint:
+		return scanTypeInt64
+	case ValueTypeReal, ValueTypeDouble:
+		return scanTypeFloat64
+	case ValueTypeTime, ValueTypeTimeTZ, ValueTypeDate, ValueTypeTimestamp, ValueTypeTimestampTZ:
+		return scanTypeTime
+	case ValueTypeVarchar, ValueTypeVarcharIgnoreCase, ValueTypeChar,
+		ValueTypeNumeric, ValueTypeDecfloat, ValueTypeUUID:
+		return scanTypeString
+	case ValueTypeBinary, ValueTypeVarbinary, ValueTypeBlob:
+		return scanTypeBytes
+	default:
+		return scanTypeAny
+	}
+}
+
+var (
+	scanTypeAny     = reflect.TypeOf((*any)(nil)).Elem()
+	scanTypeBool    = reflect.TypeOf(true)
+	scanTypeInt64   = reflect.TypeOf(int64(0))
+	scanTypeFloat64 = reflect.TypeOf(float64(0))
+	scanTypeString  = reflect.TypeOf("")
+	scanTypeBytes   = reflect.TypeOf([]byte(nil))
+	scanTypeTime    = reflect.TypeOf(time.Time{})
+)
