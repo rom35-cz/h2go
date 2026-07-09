@@ -59,8 +59,9 @@ type Rows struct {
 	err error
 
 	// closeCallback is called after the rows are closed.
-	// Used by conn.QueryContext to release the connection lock.
-	closeCallback func()
+	// Used by conn.QueryContext to release the connection lock; prepared
+	// statement rows may also use it to perform deferred COMMAND_CLOSE.
+	closeCallback func() error
 }
 
 // NewRows creates a new Rows instance for reading query results.
@@ -161,9 +162,12 @@ func (r *Rows) Close() error {
 	r.currentRow = nil
 	r.columns = nil
 
-	// Call the close callback if set (used to release connection lock)
+	// Call the close callback if set (used to release connection lock and,
+	// for prepared statements, to perform any deferred statement close).
 	if r.closeCallback != nil {
-		r.closeCallback()
+		if err := r.closeCallback(); err != nil && closeErr == nil {
+			closeErr = err
+		}
 		r.closeCallback = nil
 	}
 

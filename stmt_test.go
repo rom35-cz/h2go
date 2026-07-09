@@ -3,6 +3,8 @@ package h2go
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 )
@@ -39,6 +41,101 @@ func TestStmtCloseIdempotent(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("second Close failed: %v", err)
+	}
+}
+
+func TestStmtCloseSendsCommandClose(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		tr := NewReadWriter(serverConn)
+		op, err := tr.ReadInt32()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		id, err := tr.ReadInt32()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if op != CommandClose || id != 77 {
+			errCh <- fmt.Errorf("got op=%d id=%d, want op=%d id=77", op, id, CommandClose)
+			return
+		}
+		errCh <- nil
+	}()
+
+	c := &conn{sess: &Session{tr: NewReadWriter(clientConn), id: "test"}}
+	s := &stmt{conn: c, cmd: &PreparedCommand{ID: 77}}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("server read failed: %v", err)
+	}
+	if got := s.NumInput(); got != -1 {
+		t.Fatalf("NumInput after close = %d, want -1", got)
+	}
+}
+
+func TestStmtCloseWhileBusyDefersCommandClose(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		tr := NewReadWriter(serverConn)
+		op, err := tr.ReadInt32()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		id, err := tr.ReadInt32()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if op != CommandClose || id != 88 {
+			errCh <- fmt.Errorf("got op=%d id=%d, want op=%d id=88", op, id, CommandClose)
+			return
+		}
+		errCh <- nil
+	}()
+
+	c := &conn{sess: &Session{tr: NewReadWriter(clientConn), id: "test"}}
+	s := &stmt{conn: c, cmd: &PreparedCommand{ID: 88}}
+
+	ownedConn, _, err := s.beginOperation()
+	if err != nil {
+		t.Fatalf("beginOperation failed: %v", err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close while busy failed: %v", err)
+	}
+	s.mu.Lock()
+	if !s.closed || !s.closePending || s.cmd == nil {
+		t.Fatalf("Close while busy should keep command pending; closed=%v pending=%v cmd=%v", s.closed, s.closePending, s.cmd)
+	}
+	s.mu.Unlock()
+
+	if err := s.finishOperation(ownedConn); err != nil {
+		t.Fatalf("finishOperation failed: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("server read failed: %v", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.closeSent || s.closePending || s.cmd != nil || s.conn != nil {
+		t.Fatalf("deferred close state invalid: sent=%v pending=%v cmd=%v conn=%v",
+			s.closeSent, s.closePending, s.cmd, s.conn)
 	}
 }
 

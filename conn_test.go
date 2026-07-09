@@ -182,9 +182,8 @@ func TestConnPingClosedConnection(t *testing.T) {
 	}
 }
 
-// TestConnPingBusy verifies Ping returns an error when the connection
-// is already in use (busy). Ping now executes SELECT 1 which requires
-// acquiring the connection first.
+// TestConnPingBusy verifies Ping preserves the busy/concurrent-use error
+// instead of misclassifying a healthy-but-busy connection as driver.ErrBadConn.
 func TestConnPingBusy(t *testing.T) {
 	c := &conn{
 		sess: &Session{id: "test-session"},
@@ -195,16 +194,19 @@ func TestConnPingBusy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire failed: %v", err)
 	}
+	defer c.release()
 
-	// Ping should fail because the connection is busy.
+	// Ping should fail because the connection is busy, but this is not a broken
+	// socket/session and should not poison the pool as ErrBadConn.
 	err = c.Ping(context.Background())
 	if err == nil {
 		t.Fatal("expected error for Ping while busy")
 	}
-	// Ping on busy connection now returns ErrBadConn because the SELECT 1
-	// cannot execute without acquiring the lock.
-	if err != driver.ErrBadConn {
-		t.Errorf("expected ErrBadConn for busy connection with SELECT 1 ping, got %v", err)
+	if err == driver.ErrBadConn {
+		t.Errorf("busy Ping must not return ErrBadConn")
+	}
+	if !strings.Contains(err.Error(), "connection already in use") {
+		t.Errorf("expected busy error, got %v", err)
 	}
 }
 

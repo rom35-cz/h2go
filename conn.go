@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 )
@@ -97,14 +98,26 @@ func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 //
 // Ping implements driver.Pinger.
 func (c *conn) Ping(ctx context.Context) error {
-	// Execute SELECT 1 as a lightweight probe
+	// Execute SELECT 1 as a lightweight probe. Preserve the original error from
+	// query execution; only truly closed connections already surface as
+	// driver.ErrBadConn from acquire().
 	rows, err := c.queryContextInternal(ctx, "SELECT 1")
 	if err != nil {
-		return driver.ErrBadConn
+		return err
 	}
-	// Drain and close the result
-	_ = rows.Close()
-	return nil
+
+	dest := make([]driver.Value, len(rows.Columns()))
+	for {
+		err := rows.Next(dest)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			_ = rows.Close()
+			return err
+		}
+	}
+	return rows.Close()
 }
 
 // acquire marks the connection as busy, preventing concurrent use.
@@ -156,7 +169,10 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		c.release()
 		return nil, err
 	}
-	rows.closeCallback = func() { c.release() }
+	rows.closeCallback = func() error {
+		c.release()
+		return nil
+	}
 	return rows, nil
 }
 
@@ -176,8 +192,9 @@ func (c *conn) queryContextInternal(ctx context.Context, query string) (driver.R
 	}
 
 	// Set up cleanup callback for when rows are closed
-	rows.closeCallback = func() {
+	rows.closeCallback = func() error {
 		c.release()
+		return nil
 	}
 
 	return rows, nil

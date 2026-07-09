@@ -121,14 +121,31 @@ func TestWriteValue_RoundTrip_Primitives(t *testing.T) {
 	}
 }
 
-func TestWriteValue_StringWithNumericTypeInfo(t *testing.T) {
-	wire := writeValueBytes(t, "12345.6789", &TypeInfo{ValueType: ValueTypeNumeric})
-	if vt := readTypeCode(t, wire); vt != ValueTypeNumeric {
-		t.Fatalf("type code: got %d, want NUMERIC(%d)", vt, ValueTypeNumeric)
+func TestWriteValue_NumericTypeInfo(t *testing.T) {
+	tests := []struct {
+		name  string
+		input driver.Value
+		ti    *TypeInfo
+		want  string
+		vt    int32
+	}{
+		{name: "string numeric", input: "12345.6789", ti: &TypeInfo{ValueType: ValueTypeNumeric}, want: "12345.6789", vt: ValueTypeNumeric},
+		{name: "int64 numeric", input: int64(12345), ti: &TypeInfo{ValueType: ValueTypeNumeric}, want: "12345", vt: ValueTypeNumeric},
+		{name: "float64 numeric", input: float64(123.5), ti: &TypeInfo{ValueType: ValueTypeNumeric}, want: "123.5", vt: ValueTypeNumeric},
+		{name: "int64 decfloat", input: int64(-99), ti: &TypeInfo{ValueType: ValueTypeDecfloat}, want: "-99", vt: ValueTypeDecfloat},
+		{name: "float64 decfloat", input: float64(1.25), ti: &TypeInfo{ValueType: ValueTypeDecfloat}, want: "1.25", vt: ValueTypeDecfloat},
 	}
-	got := decodeWireValue(t, wire)
-	if s, ok := got.(string); !ok || s != "12345.6789" {
-		t.Fatalf("decoded: got %T(%v), want string(12345.6789)", got, got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			wire := writeValueBytes(t, tc.input, tc.ti)
+			if vt := readTypeCode(t, wire); vt != tc.vt {
+				t.Fatalf("type code: got %d, want %d", vt, tc.vt)
+			}
+			got := decodeWireValue(t, wire)
+			if s, ok := got.(string); !ok || s != tc.want {
+				t.Fatalf("decoded: got %T(%v), want string(%s)", got, got, tc.want)
+			}
+		})
 	}
 }
 

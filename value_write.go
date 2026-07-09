@@ -25,7 +25,7 @@ import (
 //
 // When paramType is available (from prepared-parameter metadata), it is used
 // to encode values more precisely where required by the PRD:
-//   - string + NUMERIC/DECFLOAT parameter -> numeric/decfloat wire value
+//   - string/int64/float64 + NUMERIC/DECFLOAT parameter -> numeric/decfloat wire value
 //   - string + UUID parameter -> UUID wire value (high/low int64)
 //   - time.Time + date/time/timestamp param -> matching temporal wire layout
 func (tr *Tr) WriteValue(v driver.Value, paramType *TypeInfo) error {
@@ -43,6 +43,9 @@ func (tr *Tr) WriteValue(v driver.Value, paramType *TypeInfo) error {
 		return nil
 
 	case int64:
+		if paramType != nil && (paramType.ValueType == ValueTypeNumeric || paramType.ValueType == ValueTypeDecfloat) {
+			return tr.writeStringValue(strconv.FormatInt(x, 10), paramType)
+		}
 		if err := tr.WriteInt32(ValueTypeBigint); err != nil {
 			return fmt.Errorf("h2go: WriteValue: failed to write BIGINT type: %w", err)
 		}
@@ -52,6 +55,9 @@ func (tr *Tr) WriteValue(v driver.Value, paramType *TypeInfo) error {
 		return nil
 
 	case float64:
+		if paramType != nil && (paramType.ValueType == ValueTypeNumeric || paramType.ValueType == ValueTypeDecfloat) {
+			return tr.writeStringValue(strconv.FormatFloat(x, 'g', -1, 64), paramType)
+		}
 		// Default float64 mapping is DOUBLE. If parameter metadata says REAL,
 		// encode REAL to match server-side expectation.
 		if paramType != nil && paramType.ValueType == ValueTypeReal {
