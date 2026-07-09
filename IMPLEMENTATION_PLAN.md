@@ -446,6 +446,26 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Clear error for unsupported Go types.
 - **Deliverables:** `value_write.go`, round-trip unit tests with `value_read.go`.
 - **Done when:** Each MVP param type encodes and decodes back correctly.
+- **Implementation notes:**
+  - Added `value_write.go` with `(*Tr).WriteValue(v driver.Value, paramType *TypeInfo)` mirroring H2 `Transfer.writeValue` for the MVP set: `nil`, `bool`, `int64`, `float64`, `string`, `[]byte`, `time.Time`.
+  - Wire mappings implemented:
+    - `nil` → `ValueTypeNull`
+    - `bool` → `ValueTypeBoolean`
+    - `int64` → `ValueTypeBigint`
+    - `float64` → `ValueTypeDouble` (or `ValueTypeReal` when parameter metadata says REAL)
+    - `string` → `ValueTypeVarchar` by default
+    - `[]byte` → `ValueTypeVarbinary` by default (`ValueTypeBinary` when metadata says BINARY)
+    - `time.Time` → temporal wire frames using H2 representation (`dateValue`, nanos-of-day, offset seconds), defaulting to `TIMESTAMP` when metadata is absent.
+  - Added metadata-aware string encoding required by PRD §7.9:
+    - For `NUMERIC`/`DECFLOAT` parameter metadata, strings are encoded as numeric wire values (not VARCHAR).
+    - For `UUID` parameter metadata, string UUIDs are parsed and encoded as two `int64` words (`high`, `low`).
+  - Added helper functions:
+    - `packDateValue(year, month, day)` with H2 bit layout `(year<<9)|(month<<5)|day`
+    - `nanosOfDay(time.Time)`
+    - `parseUUIDString` (canonical 36-char with hyphens or compact 32-char hex)
+  - Added `value_write_test.go` with round-trip tests through `ReadValue` for all MVP parameter types, metadata-driven NUMERIC/UUID behavior, temporal encoding by parameter type (`DATE`, `TIME`, `TIME_TZ`, `TIMESTAMP`, `TIMESTAMP_TZ`), typed-nil `[]byte`, unsupported-type errors, and UUID parser coverage.
+  - Verification: `go build ./...`, `go vet ./...`, `go test -race ./...` all pass. ✅
+- **Status:** ✅ Done — 2026-07-09
 
 ### T6.2 ExecerContext and Result
 - **Goal:** `db.ExecContext` performs updates and returns affected rows.
