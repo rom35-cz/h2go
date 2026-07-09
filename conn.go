@@ -123,6 +123,64 @@ func (c *conn) Ping(ctx context.Context) error {
 	return rows.Close()
 }
 
+// IsValid asks H2 whether the session is still alive by round-tripping the
+// SESSION_HAS_PENDING_TRANSACTION probe. The result itself is ignored; any
+// transport or session error means the connection should not be reused.
+//
+// IsValid implements driver.Validator.
+func (c *conn) IsValid() bool {
+	if c == nil {
+		return false
+	}
+	if err := c.acquire(); err != nil {
+		return false
+	}
+	defer c.release()
+
+	if c.sess == nil {
+		return false
+	}
+	_, err := c.sess.hasPendingTransaction(context.Background())
+	return err == nil
+}
+
+// ResetSession rolls back any pending transaction, restores autocommit, and
+// clears the connection state before the pool reuses the session.
+// Broken sessions return driver.ErrBadConn so database/sql discards them.
+//
+// ResetSession implements driver.SessionResetter.
+func (c *conn) ResetSession(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c == nil || c.sess == nil {
+		return driver.ErrBadConn
+	}
+	if err := c.acquire(); err != nil {
+		return driver.ErrBadConn
+	}
+	defer c.release()
+
+	pending, err := c.sess.hasPendingTransaction(ctx)
+	if err != nil {
+		return driver.ErrBadConn
+	}
+	if pending {
+		if err := c.sess.rollbackCurrentTransaction(ctx); err != nil {
+			return driver.ErrBadConn
+		}
+	}
+	if !c.sess.autoCommit {
+		if err := c.sess.setAutoCommit(ctx, true); err != nil {
+			return driver.ErrBadConn
+		}
+	}
+	return nil
+}
+
 // acquire marks the connection as busy, preventing concurrent use.
 // Returns an error if the connection is already busy or closed.
 // Callers must defer release() after a successful acquire.
@@ -300,5 +358,6 @@ var (
 	_ driver.QueryerContext     = (*conn)(nil)
 	_ driver.ExecerContext      = (*conn)(nil)
 	_ driver.NamedValueChecker  = (*conn)(nil)
-	// Validator and SessionResetter in T9.1
+	_ driver.Validator          = (*conn)(nil)
+	_ driver.SessionResetter    = (*conn)(nil)
 )

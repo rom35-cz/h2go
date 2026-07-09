@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"os"
@@ -1071,6 +1072,106 @@ func TestIntegration_TransactionNestedBeginRejected(t *testing.T) {
 
 	if _, err := conn.BeginTx(ctx, nil); err == nil {
 		t.Fatal("expected error when starting a nested transaction on the same connection")
+	}
+}
+
+// TestIntegration_ResetSessionRollsBackPendingTransaction verifies that a dirty
+// pooled connection is reset before reuse, so uncommitted work is not visible
+// to the next borrower.
+func TestIntegration_ResetSessionRollsBackPendingTransaction(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	ctx := context.Background()
+
+	table := integrationTxTableName("reset_session")
+	if _, err := db.ExecContext(ctx, "CREATE TABLE "+table+" (id INT PRIMARY KEY, note VARCHAR(64))"); err != nil {
+		t.Fatalf("CREATE TABLE: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), "DROP TABLE IF EXISTS "+table)
+	})
+
+	sqlConn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+
+	var beforeSessionID string
+	err = sqlConn.Raw(func(raw any) error {
+		c := raw.(*conn)
+		beforeSessionID = c.sess.id
+		if _, err := c.BeginTx(ctx, driver.TxOptions{}); err != nil {
+			return err
+		}
+		if _, err := c.ExecContext(ctx, "INSERT INTO "+table+" (id, note) VALUES (1, 'dirty')", nil); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("raw tx setup: %v", err)
+	}
+
+	if err := sqlConn.Close(); err != nil {
+		t.Fatalf("sql.Conn.Close: %v", err)
+	}
+
+	reusedConn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn after reset: %v", err)
+	}
+	defer func() { _ = reusedConn.Close() }()
+
+	var afterSessionID string
+	if err := reusedConn.Raw(func(raw any) error {
+		afterSessionID = raw.(*conn).sess.id
+		return nil
+	}); err != nil {
+		t.Fatalf("reusedConn.Raw: %v", err)
+	}
+	if afterSessionID != beforeSessionID {
+		t.Fatalf("session ID changed across pool reuse: before=%s after=%s", beforeSessionID[:8], afterSessionID[:8])
+	}
+
+	var count int
+	if err := reusedConn.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table+" WHERE id = 1").Scan(&count); err != nil {
+		t.Fatalf("QueryRowContext: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 after ResetSession rollback", count)
+	}
+}
+
+// TestIntegration_ValidatorReportsLiveSession verifies IsValid succeeds on a
+// live session and round-trips to the server without changing state.
+func TestIntegration_ValidatorReportsLiveSession(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	sqlConn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	defer func() { _ = sqlConn.Close() }()
+
+	var valid bool
+	if err := sqlConn.Raw(func(raw any) error {
+		valid = raw.(*conn).IsValid()
+		return nil
+	}); err != nil {
+		t.Fatalf("conn.Raw: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected IsValid to report true for a live session")
 	}
 }
 

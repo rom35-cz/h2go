@@ -297,6 +297,24 @@ func TestConnPingBusy(t *testing.T) {
 	}
 }
 
+// TestConnIsValidClosedConnection verifies IsValid returns false when the
+// session is already closed.
+func TestConnIsValidClosedConnection(t *testing.T) {
+	c := &conn{sess: nil}
+	if c.IsValid() {
+		t.Fatal("expected IsValid to report false for closed connection")
+	}
+}
+
+// TestConnResetSessionClosedConnection verifies ResetSession returns
+// driver.ErrBadConn when the connection has already been closed.
+func TestConnResetSessionClosedConnection(t *testing.T) {
+	c := &conn{sess: nil}
+	if err := c.ResetSession(context.Background()); err != driver.ErrBadConn {
+		t.Fatalf("expected ErrBadConn for closed ResetSession, got %v", err)
+	}
+}
+
 // TestConnQueryContextWithArgs verifies QueryContext takes the parameterized
 // execution path inline (no ErrSkip). The mock session has no wire transport,
 // so the request fails with a transport error rather than ErrSkip.

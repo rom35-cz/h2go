@@ -50,6 +50,35 @@ func (s *Session) Close() error {
 	return tr.Close()
 }
 
+// hasPendingTransaction asks the server whether the current session has
+// uncommitted changes. It is used by the validator and session reset path
+// to make a low-cost round trip without preparing SQL text.
+func (s *Session) hasPendingTransaction(ctx context.Context) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s == nil || s.tr == nil {
+		return false, fmt.Errorf("h2go: Session.hasPendingTransaction: session closed")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := s.tr.WriteInt32(SessionHasPendingTransaction); err != nil {
+		return false, fmt.Errorf("h2go: Session.hasPendingTransaction: failed to write op: %w", err)
+	}
+	if err := s.tr.Flush(); err != nil {
+		return false, fmt.Errorf("h2go: Session.hasPendingTransaction: flush failed: %w", err)
+	}
+	if err := readStatus(s.tr); err != nil {
+		return false, wrapError("Session.hasPendingTransaction", err)
+	}
+	pending, err := s.tr.ReadInt32()
+	if err != nil {
+		return false, fmt.Errorf("h2go: Session.hasPendingTransaction: failed to read pending flag: %w", err)
+	}
+	return pending != 0, nil
+}
+
 // ExecuteUpdate executes a parameterless update statement (INSERT, UPDATE,
 // DELETE, MERGE) and returns the affected row count.
 //

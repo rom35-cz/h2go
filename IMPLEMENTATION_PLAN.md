@@ -662,7 +662,14 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Return `driver.ErrBadConn` on broken sockets so the pool discards them; never return a half-open conn.
   - Enforce single-flight use of the TCP conn (busy guard) with a clear error on concurrent misuse.
 - **Deliverables:** validator/reset code, tests.
+- **Implementation notes:**
+  - `conn` now implements both `driver.Validator` and `driver.SessionResetter`.
+  - `IsValid()` uses a lightweight `SESSION_HAS_PENDING_TRANSACTION` round trip instead of `SELECT 1`, so validation stays side-effect free while still exercising the real TCP session.
+  - `ResetSession(ctx)` acquires the connection, probes for a pending transaction, rolls back only when needed, and then restores autocommit to `true`. Any transport/session failure returns `driver.ErrBadConn` so `database/sql` discards the socket instead of reusing a half-open connection.
+  - Added unit coverage for closed-session behavior and live integration coverage for both validator and reset paths.
+  - The pool-reuse regression uses `db.SetMaxOpenConns(1)` to force reuse of the same physical connection and confirms dirty work is rolled back before the next borrower sees the session.
 - **Done when:** Pool reuse test (many goroutines, `db.SetMaxOpenConns`) passes under `-race`; dirty conns are rolled back on reset.
+- **Status:** ✅ Done — 2026-07-09
 
 ### T9.2 Context cancellation and deadlines
 - **Goal:** Respect `context.Context`.
