@@ -491,16 +491,29 @@ func (s *Session) ExecuteQuery(ctx context.Context, sql string, maxRows int64, f
 	return rows, nil
 }
 
-// ExecuteQueryPrepared executes a prepared query command and returns the result set.
-// The command should have been prepared with PrepareCommand or PrepareCommandReadParams.
-// The command is NOT closed when the rows are closed - it can be reused.
+// ExecuteQueryPrepared executes a prepared query command without parameters
+// and returns the result set.
 func (s *Session) ExecuteQueryPrepared(ctx context.Context, cmd *PreparedCommand, maxRows int64, fetchSize int) (*Rows, error) {
-	if s.tr == nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: session closed")
-	}
+	return s.ExecuteQueryPreparedWithParams(ctx, cmd, maxRows, fetchSize, nil)
+}
 
+// ExecuteQueryPreparedWithParams executes a prepared query command with
+// positional parameters and returns the result set.
+// The command should have been prepared with PrepareCommandReadParams.
+// The command is NOT closed when rows are closed - it can be reused.
+func (s *Session) ExecuteQueryPreparedWithParams(ctx context.Context, cmd *PreparedCommand, maxRows int64, fetchSize int, params []driver.Value) (*Rows, error) {
+	if s.tr == nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: session closed")
+	}
+	if cmd == nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: nil command")
+	}
 	if !cmd.IsQuery {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: command is not a query: %s", cmd.SQL)
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: command is not a query: %s", cmd.SQL)
+	}
+	if int(cmd.ParamCount) != len(params) {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: expected %d params, got %d",
+			cmd.ParamCount, len(params))
 	}
 
 	// Generate a result ID
@@ -508,27 +521,37 @@ func (s *Session) ExecuteQueryPrepared(ctx context.Context, cmd *PreparedCommand
 
 	// Send COMMAND_EXECUTE_QUERY
 	if err := s.tr.WriteInt32(CommandExecuteQuery); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write op: %w", err)
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write op: %w", err)
 	}
 	if err := s.tr.WriteInt32(cmd.ID); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write command id: %w", err)
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write command id: %w", err)
 	}
 	if err := s.tr.WriteInt32(resultID); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write result id: %w", err)
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write result id: %w", err)
 	}
 	if err := s.tr.WriteInt64(maxRows); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write maxRows: %w", err)
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write maxRows: %w", err)
 	}
 	if err := s.tr.WriteInt32(int32(fetchSize)); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write fetchSize: %w", err)
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write fetchSize: %w", err)
 	}
-	// sendParameters: writeInt(paramCount=0) for parameterless execution.
-	// The server's setParameters() always reads the parameter count.
-	if err := s.tr.WriteInt32(0); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to write paramCount: %w", err)
+
+	// sendParameters: writeInt(paramCount) + values.
+	if err := s.tr.WriteInt32(int32(len(params))); err != nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write paramCount: %w", err)
 	}
+	for i, p := range params {
+		var paramType *TypeInfo
+		if i < len(cmd.Params) {
+			paramType = cmd.Params[i].TypeInfo
+		}
+		if err := s.tr.WriteValue(p, paramType); err != nil {
+			return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: encode param %d: %w", i+1, err)
+		}
+	}
+
 	if err := s.tr.Flush(); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: flush failed: %w", err)
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: flush failed: %w", err)
 	}
 
 	// Check context
@@ -539,21 +562,18 @@ func (s *Session) ExecuteQueryPrepared(ctx context.Context, cmd *PreparedCommand
 	}
 
 	// Read response: status then columnCount.
-	// Server: writeInt(status) . writeInt(columnCount) per TcpServerThread.
 	if err := readStatus(s.tr); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: %w", err)
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: %w", err)
 	}
 
 	columnCount, err := s.tr.ReadInt32()
 	if err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPrepared: failed to read column count: %w", err)
+		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to read column count: %w", err)
 	}
 
-	// Create Rows - this does NOT own the command since it's a prepared statement
 	rows, err := NewRows(s, resultID, columnCount, fetchSize, false, 0)
 	if err != nil {
 		return nil, err
 	}
-
 	return rows, nil
 }

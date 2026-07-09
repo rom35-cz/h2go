@@ -43,15 +43,11 @@ func (c *conn) Close() error {
 	return err
 }
 
-// Prepare returns a prepared statement for the given query.
-//
-// Note: This is a placeholder implementation that returns an error
-// indicating prepared statements are not yet supported. Full
-// prepared statement support will be implemented in Phase 6 (T6.3).
+// Prepare prepares a statement for later queries or executions.
 //
 // Prepare implements driver.Conn.
-func (c *conn) Prepare(_ string) (driver.Stmt, error) {
-	return nil, fmt.Errorf("h2go: Prepare: %w (prepared statements coming in Phase 6)", ErrNotYetSupported)
+func (c *conn) Prepare(query string) (driver.Stmt, error) {
+	return c.PrepareContext(context.Background(), query)
 }
 
 // Begin starts a new transaction.
@@ -81,13 +77,19 @@ func (c *conn) BeginTx(_ context.Context, _ driver.TxOptions) (driver.Tx, error)
 
 // PrepareContext prepares a statement with the provided context.
 //
-// Note: This is a placeholder implementation that returns an error
-// indicating prepared statements are not yet supported. Full
-// prepared statement support will be implemented in Phase 6 (T6.3).
-//
 // PrepareContext implements driver.ConnPrepareContext.
-func (c *conn) PrepareContext(_ context.Context, _ string) (driver.Stmt, error) {
-	return nil, fmt.Errorf("h2go: PrepareContext: %w (prepared statements coming in Phase 6)", ErrNotYetSupported)
+func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	if err := c.acquire(); err != nil {
+		return nil, err
+	}
+	defer c.release()
+
+	cmd, err := c.sess.PrepareCommandReadParams(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	return &stmt{conn: c, cmd: cmd}, nil
 }
 
 // Ping validates the connection by executing SELECT 1 and draining

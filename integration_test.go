@@ -620,6 +620,99 @@ func TestIntegration_ExecContextWithParams(t *testing.T) {
 	}
 }
 
+// TestIntegration_PreparedStatements exercises prepare/exec/query/close paths.
+func TestIntegration_PreparedStatements(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS t63_stmt (
+		id INT PRIMARY KEY,
+		name VARCHAR(100),
+		amount NUMERIC(12,4)
+	)`)
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer func() {
+		_, _ = db.ExecContext(ctx, "DROP TABLE IF EXISTS t63_stmt")
+	}()
+	_, _ = db.ExecContext(ctx, "DELETE FROM t63_stmt")
+
+	ins, err := db.PrepareContext(ctx, "INSERT INTO t63_stmt (id, name, amount) VALUES (?, ?, ?)")
+	if err != nil {
+		t.Fatalf("Prepare INSERT failed: %v", err)
+	}
+	defer ins.Close()
+
+	for _, tc := range []struct {
+		id     int
+		name   string
+		amount string
+	}{
+		{1, "alice", "10.5000"},
+		{2, "bob", "20.2500"},
+		{3, "carol", "30.0001"},
+	} {
+		res, err := ins.ExecContext(ctx, tc.id, tc.name, tc.amount)
+		if err != nil {
+			t.Fatalf("INSERT id=%d failed: %v", tc.id, err)
+		}
+		affected, _ := res.RowsAffected()
+		if affected != 1 {
+			t.Fatalf("INSERT id=%d affected %d rows, want 1", tc.id, affected)
+		}
+	}
+
+	upd, err := db.PrepareContext(ctx, "UPDATE t63_stmt SET name = ? WHERE id = ?")
+	if err != nil {
+		t.Fatalf("Prepare UPDATE failed: %v", err)
+	}
+	defer upd.Close()
+
+	res, err := upd.ExecContext(ctx, "bobby", 2)
+	if err != nil {
+		t.Fatalf("UPDATE failed: %v", err)
+	}
+	if affected, _ := res.RowsAffected(); affected != 1 {
+		t.Fatalf("UPDATE affected %d rows, want 1", affected)
+	}
+
+	sel, err := db.PrepareContext(ctx, "SELECT name, amount FROM t63_stmt WHERE id = ?")
+	if err != nil {
+		t.Fatalf("Prepare SELECT failed: %v", err)
+	}
+
+	for _, tc := range []struct {
+		id         int
+		wantName   string
+		wantAmount string
+	}{
+		{1, "alice", "10.5000"},
+		{2, "bobby", "20.2500"},
+		{3, "carol", "30.0001"},
+	} {
+		var gotName, gotAmount string
+		if err := sel.QueryRowContext(ctx, tc.id).Scan(&gotName, &gotAmount); err != nil {
+			t.Fatalf("SELECT id=%d failed: %v", tc.id, err)
+		}
+		if gotName != tc.wantName || gotAmount != tc.wantAmount {
+			t.Fatalf("SELECT id=%d got (%q, %q), want (%q, %q)",
+				tc.id, gotName, gotAmount, tc.wantName, tc.wantAmount)
+		}
+	}
+
+	if err := sel.Close(); err != nil {
+		t.Fatalf("Stmt.Close failed: %v", err)
+	}
+	if err := sel.Close(); err != nil {
+		t.Fatalf("Stmt.Close second call failed: %v", err)
+	}
+}
+
 // TestIntegration_QueryLargeResult checks that a result larger than one fetch
 // batch is correctly paginated.
 func TestIntegration_QueryLargeResult(t *testing.T) {

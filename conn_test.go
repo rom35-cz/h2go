@@ -19,18 +19,20 @@ func TestConnImplementsInterfaces(_ *testing.T) {
 	var _ driver.ExecerContext = (*conn)(nil)
 }
 
-// TestConnPrepareNotSupported verifies Prepare returns not-yet-supported error.
-func TestConnPrepareNotSupported(t *testing.T) {
-	c := &conn{
-		sess: &Session{id: "test-session"},
-	}
+// TestConnPrepareSessionClosed verifies Prepare reports a session/transport error
+// when called on a mock session without wire transport.
+func TestConnPrepareSessionClosed(t *testing.T) {
+	c := &conn{sess: &Session{id: "test-session"}}
 
 	_, err := c.Prepare("SELECT 1")
 	if err == nil {
-		t.Fatal("expected error for not-yet-supported Prepare")
+		t.Fatal("expected error")
 	}
-	if !errors.Is(err, ErrNotYetSupported) {
-		t.Errorf("expected ErrNotYetSupported, got %v", err)
+	if errors.Is(err, ErrNotYetSupported) {
+		t.Errorf("Prepare should be implemented; got ErrNotYetSupported")
+	}
+	if !strings.Contains(err.Error(), "session closed") {
+		t.Errorf("expected session closed error, got %v", err)
 	}
 }
 
@@ -64,18 +66,14 @@ func TestConnBeginTxNotSupported(t *testing.T) {
 	}
 }
 
-// TestConnPrepareContextNotSupported verifies PrepareContext returns error.
-func TestConnPrepareContextNotSupported(t *testing.T) {
-	c := &conn{
-		sess: &Session{id: "test-session"},
-	}
+// TestConnPrepareContextNoSession verifies PrepareContext returns ErrBadConn
+// when the connection has no live session.
+func TestConnPrepareContextNoSession(t *testing.T) {
+	c := &conn{sess: nil}
 
 	_, err := c.PrepareContext(context.Background(), "SELECT 1")
-	if err == nil {
-		t.Fatal("expected error for not-yet-supported PrepareContext")
-	}
-	if !errors.Is(err, ErrNotYetSupported) {
-		t.Errorf("expected ErrNotYetSupported, got %v", err)
+	if err != driver.ErrBadConn {
+		t.Fatalf("expected ErrBadConn, got %v", err)
 	}
 }
 

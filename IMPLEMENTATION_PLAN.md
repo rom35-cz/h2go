@@ -503,6 +503,31 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Support repeated execution of one prepared statement.
 - **Deliverables:** `stmt.go`, integration tests (prepare once, exec/query many; stmt close frees server command).
 - **Done when:** Prepared exec + query work repeatedly; no leaked commands.
+- **Implementation notes:**
+  - Added `stmt.go` implementing:
+    - `driver.Stmt` (`Close`, `NumInput`, legacy `Exec`/`Query` shims)
+    - `driver.StmtExecContext`
+    - `driver.StmtQueryContext`
+  - `conn.Prepare` / `conn.PrepareContext` now create real server-side prepared commands via `SESSION_PREPARE_READ_PARAMS2` and return `*stmt`.
+  - Statement parameter count is sourced from server metadata (`PreparedCommand.ParamCount`) and returned from `NumInput()`.
+  - `Stmt.Close()` now sends `COMMAND_CLOSE` on the wire to free the remote command; close is idempotent.
+  - Added parameterized prepared execution paths:
+    - `Session.ExecuteQueryPreparedWithParams(ctx, cmd, maxRows, fetchSize, params)` in `rows.go`
+    - Existing `ExecuteQueryPrepared(...)` now delegates to the new method with `nil` params.
+    - (T6.2 path reused) `Session.ExecuteUpdatePreparedWithParams(...)` for prepared updates.
+  - Parameter handling for statement calls uses shared `convertNamedValues` conversion:
+    - positional-only placeholders (`?`) enforced,
+    - conversion via `driver.DefaultParameterConverter`,
+    - wire encoding via T6.1 `WriteValue` with parameter `TypeInfo`.
+  - Connection single-flight guard preserved for prepared operations:
+    - `StmtExecContext` acquires/releases around execution.
+    - `StmtQueryContext` acquires and releases on `Rows.Close()` via `closeCallback`.
+  - Tests added/updated:
+    - `stmt_test.go` (interface compliance, `NumInput`, close idempotence, closed-statement error paths).
+    - `conn_test.go` updated for implemented `Prepare`/`PrepareContext` behavior.
+    - Integration: `TestIntegration_PreparedStatements` covers prepare-once, repeated exec/query, parameter binding, and statement close.
+  - Verification: `go build ./...`, `go vet ./...`, `go test -race ./...`, `go test -tags integration ./...`, and `golangci-lint run` all green. ✅
+- **Status:** ✅ Done — 2026-07-09
 
 ### T6.4 NamedValueChecker
 - **Goal:** Custom arg conversion and clear rejection of named params.
