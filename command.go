@@ -87,27 +87,30 @@ const (
 //
 // For prepared statements that need parameter type information (for
 // NumInput and parameter encoding), use PrepareCommandReadParams instead.
-func (s *Session) PrepareCommand(ctx context.Context, sql string) (*PreparedCommand, error) {
+func (s *Session) PrepareCommand(ctx context.Context, sql string) (cmd *PreparedCommand, err error) {
 	if s.tr == nil {
 		return nil, fmt.Errorf("h2go: PrepareCommand: session closed")
 	}
+	cleanup := beginOperationContext(ctx, s.tr, nil)
+	defer cleanup()
+	defer s.finalizeContext(ctx, &err)
 
 	// Generate a new command ID
 	cmdID := s.nextCommandID()
 
 	// Write SESSION_PREPARE: [op, id, sql]
-	if err := s.tr.WriteInt32(SessionPrepare); err != nil {
+	if err = s.tr.WriteInt32(SessionPrepare); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommand: failed to write op: %w", err)
 	}
-	if err := s.tr.WriteInt32(cmdID); err != nil {
+	if err = s.tr.WriteInt32(cmdID); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommand: failed to write command id: %w", err)
 	}
-	if err := s.tr.WriteString(sql); err != nil {
+	if err = s.tr.WriteString(sql); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommand: failed to write SQL: %w", err)
 	}
 
 	// Flush and check for context cancellation
-	if err := s.tr.Flush(); err != nil {
+	if err = s.tr.Flush(); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommand: flush failed: %w", err)
 	}
 
@@ -120,26 +123,24 @@ func (s *Session) PrepareCommand(ctx context.Context, sql string) (*PreparedComm
 	// Read response.
 	// Server: writeInt(status) . writeBoolean(isQuery) . writeBoolean(readOnly) . writeInt(paramCount)
 	// Check status first — if STATUS_ERROR the server follows with an H2Error payload.
-	if err := readStatus(s.tr); err != nil {
+	if err = readStatus(s.tr); err != nil {
 		return nil, wrapError("PrepareCommand", err)
 	}
 
-	isQuery, err := s.tr.ReadBool()
-	if err != nil {
+	var isQuery, readOnly bool
+	if isQuery, err = s.tr.ReadBool(); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommand: failed to read isQuery: %w", err)
 	}
-
-	readOnly, err := s.tr.ReadBool()
-	if err != nil {
+	if readOnly, err = s.tr.ReadBool(); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommand: failed to read readOnly: %w", err)
 	}
 
-	paramCount, err := s.tr.ReadInt32()
-	if err != nil {
+	var paramCount int32
+	if paramCount, err = s.tr.ReadInt32(); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommand: failed to read paramCount: %w", err)
 	}
 
-	cmd := &PreparedCommand{
+	cmd = &PreparedCommand{
 		ID:         cmdID,
 		SQL:        sql,
 		IsQuery:    isQuery,
@@ -162,27 +163,30 @@ func (s *Session) PrepareCommand(ctx context.Context, sql string) (*PreparedComm
 //
 // This is used for driver.Stmt.NumInput and for determining parameter types
 // before binding values.
-func (s *Session) PrepareCommandReadParams(ctx context.Context, sql string) (*PreparedCommand, error) {
+func (s *Session) PrepareCommandReadParams(ctx context.Context, sql string) (cmd *PreparedCommand, err error) {
 	if s.tr == nil {
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: session closed")
 	}
+	cleanup := beginOperationContext(ctx, s.tr, nil)
+	defer cleanup()
+	defer s.finalizeContext(ctx, &err)
 
 	// Generate a new command ID
 	cmdID := s.nextCommandID()
 
 	// Write SESSION_PREPARE_READ_PARAMS2: [op, id, sql]
-	if err := s.tr.WriteInt32(SessionPrepareReadParams2); err != nil {
+	if err = s.tr.WriteInt32(SessionPrepareReadParams2); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: failed to write op: %w", err)
 	}
-	if err := s.tr.WriteInt32(cmdID); err != nil {
+	if err = s.tr.WriteInt32(cmdID); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: failed to write command id: %w", err)
 	}
-	if err := s.tr.WriteString(sql); err != nil {
+	if err = s.tr.WriteString(sql); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: failed to write SQL: %w", err)
 	}
 
 	// Flush and check for context cancellation
-	if err := s.tr.Flush(); err != nil {
+	if err = s.tr.Flush(); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: flush failed: %w", err)
 	}
 
@@ -194,27 +198,23 @@ func (s *Session) PrepareCommandReadParams(ctx context.Context, sql string) (*Pr
 
 	// Read response
 	// Server sends: status, isQuery (boolean), readOnly (boolean), cmdType (int), paramCount (int)
-	if err := readStatus(s.tr); err != nil {
+	if err = readStatus(s.tr); err != nil {
 		return nil, wrapError("PrepareCommandReadParams", err)
 	}
 
-	isQuery, err := s.tr.ReadBool()
-	if err != nil {
+	var isQuery, readOnly bool
+	if isQuery, err = s.tr.ReadBool(); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: failed to read isQuery: %w", err)
 	}
-
-	readOnly, err := s.tr.ReadBool()
-	if err != nil {
+	if readOnly, err = s.tr.ReadBool(); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: failed to read readOnly: %w", err)
 	}
 
-	cmdType, err := s.tr.ReadInt32()
-	if err != nil {
+	var cmdType, paramCount int32
+	if cmdType, err = s.tr.ReadInt32(); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: failed to read cmdType: %w", err)
 	}
-
-	paramCount, err := s.tr.ReadInt32()
-	if err != nil {
+	if paramCount, err = s.tr.ReadInt32(); err != nil {
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: failed to read paramCount: %w", err)
 	}
 
@@ -240,7 +240,7 @@ func (s *Session) PrepareCommandReadParams(ctx context.Context, sql string) (*Pr
 		}
 	}
 
-	cmd := &PreparedCommand{
+	cmd = &PreparedCommand{
 		ID:         cmdID,
 		SQL:        sql,
 		IsQuery:    isQuery,

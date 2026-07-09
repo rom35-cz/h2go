@@ -188,7 +188,7 @@ func (c *conn) acquire() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.sess == nil {
+	if c.sess == nil || c.sess.dead {
 		return driver.ErrBadConn
 	}
 	if c.busy {

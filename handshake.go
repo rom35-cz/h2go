@@ -1,6 +1,7 @@
 package h2go
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -27,101 +28,124 @@ import (
 // If the server returns a version other than 21, or any STATUS_ERROR,
 // the connection is closed and an error is returned.
 func Handshake(cfg *Config) (*Session, error) {
+	return HandshakeContext(context.Background(), cfg)
+}
+
+// HandshakeContext is the context-aware form of Handshake. It applies any
+// caller deadline to the underlying TCP socket and aborts the connection on
+// cancellation so the caller never gets a half-open session.
+func HandshakeContext(ctx context.Context, cfg *Config) (*Session, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	addr := net.JoinHostPort(cfg.Host, cfg.Port)
-	conn, err := net.Dial("tcp", addr)
+	dialer := net.Dialer{}
+	if deadline, ok := ctx.Deadline(); ok {
+		dialer.Deadline = deadline
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("h2go: dial %s: %w", addr, err)
 	}
 
 	tr := NewReadWriter(conn)
+	cleanup := beginOperationContext(ctx, tr, nil)
+	defer cleanup()
+
+	defer func() {
+		if err != nil {
+			_ = tr.Abort()
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
+		}
+	}()
 
 	// Step 1: send credentials and requested protocol version.
-	if err := sendCredentials(tr, cfg); err != nil {
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: send credentials: %w", err)
+	if e := sendCredentials(tr, cfg); e != nil {
+		err = fmt.Errorf("h2go: send credentials: %w", e)
+		return nil, err
 	}
-	if err := tr.Flush(); err != nil {
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: flush credentials: %w", err)
+	if e := tr.Flush(); e != nil {
+		err = fmt.Errorf("h2go: flush credentials: %w", e)
+		return nil, err
 	}
 
 	// Step 2: read status and negotiated version.
-	status, err := tr.ReadInt32()
-	if err != nil {
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: read status: %w", err)
+	status, e := tr.ReadInt32()
+	if e != nil {
+		err = fmt.Errorf("h2go: read status: %w", e)
+		return nil, err
 	}
 
 	switch status {
 	case StatusError:
 		err = readH2Error(tr)
-		_ = tr.Close()
 		return nil, err
 	case StatusOK:
 		// continue
 	default:
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: unexpected status %d", status)
+		err = fmt.Errorf("h2go: unexpected status %d", status)
+		return nil, err
 	}
 
-	version, err := tr.ReadInt32()
-	if err != nil {
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: read version: %w", err)
+	version, e := tr.ReadInt32()
+	if e != nil {
+		err = fmt.Errorf("h2go: read version: %w", e)
+		return nil, err
 	}
 	if version != TCPProtocolVersion21 {
-		_ = tr.Close()
-		return nil, fmt.Errorf(
+		err = fmt.Errorf(
 			"%w; require protocol 21 / H2 2.4.240+ (got %d)",
 			ErrUnsupportedServerVersion, version)
+		return nil, err
 	}
 
 	// Step 3: send SESSION_SET_ID.
-	sessionID, err := generateSessionID()
-	if err != nil {
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: generate session id: %w", err)
+	sessionID, e := generateSessionID()
+	if e != nil {
+		err = fmt.Errorf("h2go: generate session id: %w", e)
+		return nil, err
 	}
 
-	if err := tr.WriteInt32(SessionSetID); err != nil {
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: write session set id op: %w", err)
+	if e := tr.WriteInt32(SessionSetID); e != nil {
+		err = fmt.Errorf("h2go: write session set id op: %w", e)
+		return nil, err
 	}
-	if err := tr.WriteString(sessionID); err != nil {
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: write session id: %w", err)
+	if e := tr.WriteString(sessionID); e != nil {
+		err = fmt.Errorf("h2go: write session id: %w", e)
+		return nil, err
 	}
-	if err := tr.WriteString(localTimeZoneID()); err != nil {
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: write timezone id: %w", err)
+	if e := tr.WriteString(localTimeZoneID()); e != nil {
+		err = fmt.Errorf("h2go: write timezone id: %w", e)
+		return nil, err
 	}
-	if err := tr.Flush(); err != nil {
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: flush session set id: %w", err)
+	if e := tr.Flush(); e != nil {
+		err = fmt.Errorf("h2go: flush session set id: %w", e)
+		return nil, err
 	}
 
 	// Step 4: read status and autocommit state.
-	status, err = tr.ReadInt32()
-	if err != nil {
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: read session status: %w", err)
+	status, e = tr.ReadInt32()
+	if e != nil {
+		err = fmt.Errorf("h2go: read session status: %w", e)
+		return nil, err
 	}
 	switch status {
 	case StatusError:
 		err = readH2Error(tr)
-		_ = tr.Close()
 		return nil, err
 	case StatusOK:
 		// continue
 	default:
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: unexpected status %d after session set id", status)
+		err = fmt.Errorf("h2go: unexpected status %d after session set id", status)
+		return nil, err
 	}
 
-	autoCommit, err := tr.ReadBool()
-	if err != nil {
-		_ = tr.Close()
-		return nil, fmt.Errorf("h2go: read autocommit: %w", err)
+	autoCommit, e := tr.ReadBool()
+	if e != nil {
+		err = fmt.Errorf("h2go: read autocommit: %w", e)
+		return nil, err
 	}
 
 	return &Session{
@@ -129,6 +153,7 @@ func Handshake(cfg *Config) (*Session, error) {
 		id:         sessionID,
 		version:    version,
 		autoCommit: autoCommit,
+		cfg:        cloneConfig(cfg),
 	}, nil
 }
 

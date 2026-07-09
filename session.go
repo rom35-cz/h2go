@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql/driver"
 	"fmt"
+	"net"
 	"sync"
+	"time"
 )
 
 // ResultWithUpdateCount captures the result of an executeUpdate operation.
@@ -16,9 +18,11 @@ type ResultWithUpdateCount struct {
 // Session holds an authenticated H2 TCP session.
 type Session struct {
 	tr         *Tr
+	cfg        *Config
 	id         string
 	version    int32
 	autoCommit bool
+	dead       bool
 	mu         sync.Mutex // protects nextID
 	nextID     int32      // incremented for each command ID
 }
@@ -36,10 +40,12 @@ type Session struct {
 // may add a configurable deadline on the STATUS_OK read.
 func (s *Session) Close() error {
 	if s.tr == nil {
+		s.dead = true
 		return nil
 	}
 	tr := s.tr
 	s.tr = nil // prevent double-close
+	s.dead = true
 
 	// Notify the server and drain its STATUS_OK reply. Errors are discarded:
 	// the transport must be closed regardless of the session state.
@@ -50,33 +56,103 @@ func (s *Session) Close() error {
 	return tr.Close()
 }
 
+// Abort closes the underlying transport immediately without sending the
+// protocol-level SESSION_CLOSE handshake. It is used after context cancellation
+// or deadline expiry to ensure the driver never reuses an unknown session.
+func (s *Session) Abort() error {
+	if s == nil || s.tr == nil {
+		if s != nil {
+			s.dead = true
+		}
+		return nil
+	}
+	tr := s.tr
+	s.tr = nil
+	s.dead = true
+	return tr.Abort()
+}
+
+// cancelStatement uses H2's side-channel cancellation protocol to ask the
+// server to stop a running statement identified by statementID.
+func (s *Session) cancelStatement(statementID int32) error {
+	if s == nil || s.cfg == nil {
+		return fmt.Errorf("h2go: Session.cancelStatement: missing connection config")
+	}
+	addr := net.JoinHostPort(s.cfg.Host, s.cfg.Port)
+	dialer := net.Dialer{Timeout: 2 * time.Second}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("h2go: Session.cancelStatement: dial %s: %w", addr, err)
+	}
+	tr := NewReadWriter(conn)
+	defer func() { _ = tr.Abort() }()
+
+	if err := tr.WriteInt32(TCPProtocolVersionMinSupported); err != nil {
+		return fmt.Errorf("h2go: Session.cancelStatement: write min version: %w", err)
+	}
+	if err := tr.WriteInt32(TCPProtocolVersionMaxSupported); err != nil {
+		return fmt.Errorf("h2go: Session.cancelStatement: write max version: %w", err)
+	}
+	if err := tr.WriteNullString(); err != nil {
+		return fmt.Errorf("h2go: Session.cancelStatement: write db: %w", err)
+	}
+	if err := tr.WriteNullString(); err != nil {
+		return fmt.Errorf("h2go: Session.cancelStatement: write original url: %w", err)
+	}
+	if err := tr.WriteString(s.id); err != nil {
+		return fmt.Errorf("h2go: Session.cancelStatement: write session id: %w", err)
+	}
+	if err := tr.WriteInt32(SessionCancelStatement); err != nil {
+		return fmt.Errorf("h2go: Session.cancelStatement: write cancel op: %w", err)
+	}
+	if err := tr.WriteInt32(statementID); err != nil {
+		return fmt.Errorf("h2go: Session.cancelStatement: write statement id: %w", err)
+	}
+	return tr.Close()
+}
+
+func (s *Session) finalizeContext(ctx context.Context, errp *error) {
+	if errp == nil || *errp == nil {
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
+		_ = s.Abort()
+		*errp = ctx.Err()
+	}
+}
+
 // hasPendingTransaction asks the server whether the current session has
 // uncommitted changes. It is used by the validator and session reset path
 // to make a low-cost round trip without preparing SQL text.
-func (s *Session) hasPendingTransaction(ctx context.Context) (bool, error) {
+func (s *Session) hasPendingTransaction(ctx context.Context) (pending bool, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if s == nil || s.tr == nil {
 		return false, fmt.Errorf("h2go: Session.hasPendingTransaction: session closed")
 	}
-	if err := ctx.Err(); err != nil {
+	cleanup := beginOperationContext(ctx, s.tr, nil)
+	defer cleanup()
+	defer s.finalizeContext(ctx, &err)
+
+	if err = ctx.Err(); err != nil {
 		return false, err
 	}
-	if err := s.tr.WriteInt32(SessionHasPendingTransaction); err != nil {
+	if err = s.tr.WriteInt32(SessionHasPendingTransaction); err != nil {
 		return false, fmt.Errorf("h2go: Session.hasPendingTransaction: failed to write op: %w", err)
 	}
-	if err := s.tr.Flush(); err != nil {
+	if err = s.tr.Flush(); err != nil {
 		return false, fmt.Errorf("h2go: Session.hasPendingTransaction: flush failed: %w", err)
 	}
-	if err := readStatus(s.tr); err != nil {
+	if err = readStatus(s.tr); err != nil {
 		return false, wrapError("Session.hasPendingTransaction", err)
 	}
-	pending, err := s.tr.ReadInt32()
+	var pendingRaw int32
+	pendingRaw, err = s.tr.ReadInt32()
 	if err != nil {
 		return false, fmt.Errorf("h2go: Session.hasPendingTransaction: failed to read pending flag: %w", err)
 	}
-	return pending != 0, nil
+	return pendingRaw != 0, nil
 }
 
 // ExecuteUpdate executes a parameterless update statement (INSERT, UPDATE,
@@ -92,7 +168,7 @@ func (s *Session) ExecuteUpdate(ctx context.Context, sql string) (*ResultWithUpd
 	}
 
 	// Execute the update
-	res, err := s.ExecuteUpdatePrepared(cmd)
+	res, err := s.ExecuteUpdatePrepared(ctx, cmd)
 	if err != nil {
 		// Attempt to close command even on error
 		_ = cmd.Close(s)
@@ -116,7 +192,7 @@ func (s *Session) ExecuteUpdateWithParams(ctx context.Context, sql string, param
 		return nil, err
 	}
 
-	res, err := s.ExecuteUpdatePreparedWithParams(cmd, params)
+	res, err := s.ExecuteUpdatePreparedWithParams(ctx, cmd, params)
 	if err != nil {
 		_ = cmd.Close(s)
 		return nil, err
@@ -127,13 +203,13 @@ func (s *Session) ExecuteUpdateWithParams(ctx context.Context, sql string, param
 }
 
 // ExecuteUpdatePrepared executes a pre-prepared update command without params.
-func (s *Session) ExecuteUpdatePrepared(cmd *PreparedCommand) (*ResultWithUpdateCount, error) {
-	return s.ExecuteUpdatePreparedWithParams(cmd, nil)
+func (s *Session) ExecuteUpdatePrepared(ctx context.Context, cmd *PreparedCommand) (*ResultWithUpdateCount, error) {
+	return s.ExecuteUpdatePreparedWithParams(ctx, cmd, nil)
 }
 
 // ExecuteUpdatePreparedWithParams executes a pre-prepared update command with
 // positional parameters.
-func (s *Session) ExecuteUpdatePreparedWithParams(cmd *PreparedCommand, params []driver.Value) (*ResultWithUpdateCount, error) {
+func (s *Session) ExecuteUpdatePreparedWithParams(ctx context.Context, cmd *PreparedCommand, params []driver.Value) (res *ResultWithUpdateCount, err error) {
 	if s == nil || s.tr == nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", "session closed")
 	}
@@ -144,21 +220,25 @@ func (s *Session) ExecuteUpdatePreparedWithParams(cmd *PreparedCommand, params [
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", "command is a query, not an update")
 	}
 
+	cleanup := beginOperationContext(ctx, s.tr, func() error { return s.cancelStatement(cmd.ID) })
+	defer cleanup()
+	defer s.finalizeContext(ctx, &err)
+
 	if int(cmd.ParamCount) != len(params) {
 		return nil, fmt.Errorf("h2go: ExecuteUpdatePreparedWithParams: expected %d params, got %d",
 			cmd.ParamCount, len(params))
 	}
 
 	// Send COMMAND_EXECUTE_UPDATE
-	if err := s.tr.WriteInt32(CommandExecuteUpdate); err != nil {
+	if err = s.tr.WriteInt32(CommandExecuteUpdate); err != nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
-	if err := s.tr.WriteInt32(cmd.ID); err != nil {
+	if err = s.tr.WriteInt32(cmd.ID); err != nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
 	// Send parameter count and parameter values.
-	if err := s.tr.WriteInt32(int32(len(params))); err != nil {
+	if err = s.tr.WriteInt32(int32(len(params))); err != nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 	for i, param := range params {
@@ -166,32 +246,34 @@ func (s *Session) ExecuteUpdatePreparedWithParams(cmd *PreparedCommand, params [
 		if i < len(cmd.Params) {
 			paramType = cmd.Params[i].TypeInfo
 		}
-		if err := s.tr.WriteValue(param, paramType); err != nil {
+		if err = s.tr.WriteValue(param, paramType); err != nil {
 			return nil, fmt.Errorf("h2go: ExecuteUpdatePreparedWithParams: encode param %d: %w", i+1, err)
 		}
 	}
 
 	// Send generated keys mode: NONE = 0 for MVP.
-	if err := s.tr.WriteInt32(GeneratedKeysNone); err != nil {
+	if err = s.tr.WriteInt32(GeneratedKeysNone); err != nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
-	if err := s.tr.Flush(); err != nil {
+	if err = s.tr.Flush(); err != nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
 	// Read response: status, updateCount (rowCount), autoCommit.
 	// Server: writeInt(status) . writeRowCount(updateCount) . writeBoolean(autoCommit)
-	if err := readStatus(s.tr); err != nil {
+	if err = readStatus(s.tr); err != nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
-	updateCount, err := s.tr.ReadRowCount()
+	var updateCount int64
+	updateCount, err = s.tr.ReadRowCount()
 	if err != nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
-	autoCommit, err := s.tr.ReadBool()
+	var autoCommit bool
+	autoCommit, err = s.tr.ReadBool()
 	if err != nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}

@@ -17,16 +17,13 @@ type connector struct {
 //
 // Connect implements driver.Connector.
 func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
-	// TODO(T9.2): Apply context deadline to the dial and handshake.
-	// For now, we perform blocking I/O and check for cancellation
-	// before and after the expensive operations.
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
 	}
 
-	sess, err := Handshake(c.cfg)
+	sess, err := HandshakeContext(ctx, c.cfg)
 	if err != nil {
 		return nil, err
 	}

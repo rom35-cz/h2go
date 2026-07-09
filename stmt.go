@@ -109,7 +109,7 @@ func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (drive
 		return nil, err
 	}
 
-	res, execErr := c.sess.ExecuteUpdatePreparedWithParams(cmd, params)
+	res, execErr := c.sess.ExecuteUpdatePreparedWithParams(ctx, cmd, params)
 	closeErr := s.finishOperation(c)
 	if execErr != nil {
 		return nil, execErr

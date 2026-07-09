@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"strings"
+	"time"
 )
 
 // DefaultBufferSize is the default buffer size for the transfer stream.
@@ -23,6 +24,7 @@ type Tr struct {
 	r  *bufio.Reader
 	w  *bufio.Writer
 	wc io.WriteCloser
+	dl deadlineSetter
 }
 
 // NewReader creates a Tr that reads from r. It has no writer and cannot Flush.
@@ -36,11 +38,12 @@ func NewWriter(w io.WriteCloser) *Tr {
 }
 
 // NewReadWriter creates a Tr over a bidirectional connection.
-func NewReadWriter(rw io.ReadWriteCloser) *Tr {
+func NewReadWriter(rw deadlineSetterReadWriteCloser) *Tr {
 	return &Tr{
 		r:  bufio.NewReaderSize(rw, DefaultBufferSize),
 		w:  bufio.NewWriterSize(rw, DefaultBufferSize),
 		wc: rw,
+		dl: rw,
 	}
 }
 
@@ -50,6 +53,23 @@ func (t *Tr) Flush() error {
 		return errors.New("Tr: flush called on read-only transfer")
 	}
 	return t.w.Flush()
+}
+
+// SetDeadline applies a deadline to the underlying transport when supported.
+func (t *Tr) SetDeadline(deadline time.Time) error {
+	if t == nil || t.dl == nil {
+		return nil
+	}
+	return t.dl.SetDeadline(deadline)
+}
+
+// Abort closes the underlying transport without attempting a protocol close
+// handshake or flushing buffered data.
+func (t *Tr) Abort() error {
+	if t == nil || t.wc == nil {
+		return nil
+	}
+	return t.wc.Close()
 }
 
 // Close flushes buffered data and closes the underlying write closer.
@@ -66,6 +86,13 @@ func (t *Tr) Close() error {
 		}
 	}
 	return nil
+}
+
+// deadlineSetterReadWriteCloser is the subset of net.Conn we need for context
+// deadlines on the H2 transport.
+type deadlineSetterReadWriteCloser interface {
+	io.ReadWriteCloser
+	SetDeadline(time.Time) error
 }
 
 // ---- Primitives: write ----

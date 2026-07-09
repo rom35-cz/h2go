@@ -5,8 +5,10 @@ package h2go
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"testing"
+	"time"
 )
 
 // mockTransferFromBytes creates a Tr that reads from the provided bytes.
@@ -153,6 +155,33 @@ func TestSession_PrepareCommandReadParams_ClosedSession(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(err.Error()), []byte("closed")) {
 		t.Errorf("Error message should mention 'closed', got: %v", err)
+	}
+}
+
+// TestSession_PrepareCommandContextTimeoutAbortsSession verifies that a
+// deadline during command preparation aborts the session so it is not reused.
+func TestSession_PrepareCommandContextTimeoutAbortsSession(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	sess := &Session{tr: NewReadWriter(clientConn), id: "test-session", version: 21}
+	go func() {
+		tr := NewReadWriter(serverConn)
+		_, _ = tr.ReadInt32()  // op
+		_, _ = tr.ReadInt32()  // command id
+		_, _ = tr.ReadString() // sql
+		// Intentionally never respond; the client deadline should fire.
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err := sess.PrepareCommand(ctx, "SELECT 1")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("PrepareCommand error = %v, want context deadline exceeded", err)
+	}
+	if sess.tr != nil {
+		t.Fatal("expected session transport to be aborted after deadline")
 	}
 }
 

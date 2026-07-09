@@ -86,6 +86,17 @@ func MergeCredentials(cfg *Config, user, password string) {
 	}
 }
 
+// cloneConfig makes a shallow copy of cfg for long-lived connection/session
+// state. Params remains shared (matching NewConnector's behavior) because the
+// driver treats the map as immutable after parsing.
+func cloneConfig(cfg *Config) *Config {
+	if cfg == nil {
+		return nil
+	}
+	cloned := *cfg
+	return &cloned
+}
+
 func parseJDBC(input string) (*Config, error) {
 	// ParseDSN guarantees the "jdbc:h2:" prefix before calling here.
 	const prefix = "jdbc:h2:"

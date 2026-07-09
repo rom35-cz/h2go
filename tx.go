@@ -171,71 +171,87 @@ func txIsolationSQL(level driver.IsolationLevel) (sqlLevel string, restoreIsolat
 	}
 }
 
-func (s *Session) setAutoCommit(ctx context.Context, autoCommit bool) error {
+func (s *Session) setAutoCommit(ctx context.Context, autoCommit bool) (err error) {
 	if s == nil || s.tr == nil {
 		return fmt.Errorf("h2go: Session.setAutoCommit: session closed")
 	}
-	if err := ctx.Err(); err != nil {
+	cleanup := beginOperationContext(ctx, s.tr, nil)
+	defer cleanup()
+	defer s.finalizeContext(ctx, &err)
+
+	if err = ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.tr.WriteInt32(SessionSetAutocommit); err != nil {
+	if err = s.tr.WriteInt32(SessionSetAutocommit); err != nil {
 		return fmt.Errorf("h2go: Session.setAutoCommit: failed to write op: %w", err)
 	}
-	if err := s.tr.WriteBool(autoCommit); err != nil {
+	if err = s.tr.WriteBool(autoCommit); err != nil {
 		return fmt.Errorf("h2go: Session.setAutoCommit: failed to write autocommit: %w", err)
 	}
-	if err := s.tr.Flush(); err != nil {
+	if err = s.tr.Flush(); err != nil {
 		return fmt.Errorf("h2go: Session.setAutoCommit: flush failed: %w", err)
 	}
-	if err := readStatus(s.tr); err != nil {
+	if err = readStatus(s.tr); err != nil {
 		return wrapError("Session.setAutoCommit", err)
 	}
 	s.autoCommit = autoCommit
 	return nil
 }
 
-func (s *Session) commitCurrentTransaction(ctx context.Context) error {
+func (s *Session) commitCurrentTransaction(ctx context.Context) (err error) {
 	if s == nil || s.tr == nil {
 		return fmt.Errorf("h2go: Session.commitCurrentTransaction: session closed")
 	}
-	if err := ctx.Err(); err != nil {
+	cleanup := beginOperationContext(ctx, s.tr, nil)
+	defer cleanup()
+	defer s.finalizeContext(ctx, &err)
+
+	if err = ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.tr.WriteInt32(CommandCommit); err != nil {
+	if err = s.tr.WriteInt32(CommandCommit); err != nil {
 		return fmt.Errorf("h2go: Session.commitCurrentTransaction: failed to write op: %w", err)
 	}
-	if err := s.tr.Flush(); err != nil {
+	if err = s.tr.Flush(); err != nil {
 		return fmt.Errorf("h2go: Session.commitCurrentTransaction: flush failed: %w", err)
 	}
-	if err := readStatus(s.tr); err != nil {
+	if err = readStatus(s.tr); err != nil {
 		return wrapError("Session.commitCurrentTransaction", err)
 	}
 	return nil
 }
 
-func (s *Session) rollbackCurrentTransaction(ctx context.Context) error {
+func (s *Session) rollbackCurrentTransaction(ctx context.Context) (err error) {
 	if s == nil || s.tr == nil {
 		return fmt.Errorf("h2go: Session.rollbackCurrentTransaction: session closed")
 	}
-	if err := ctx.Err(); err != nil {
+	cleanup := beginOperationContext(ctx, s.tr, nil)
+	defer cleanup()
+	defer s.finalizeContext(ctx, &err)
+
+	if err = ctx.Err(); err != nil {
 		return err
 	}
-	_, err := s.ExecuteUpdate(ctx, "ROLLBACK")
+	_, err = s.ExecuteUpdate(ctx, "ROLLBACK")
 	if err != nil {
 		return wrapError("Session.rollbackCurrentTransaction", err)
 	}
 	return nil
 }
 
-func (s *Session) setTransactionIsolation(ctx context.Context, sqlLevel string) error {
+func (s *Session) setTransactionIsolation(ctx context.Context, sqlLevel string) (err error) {
 	if s == nil || s.tr == nil {
 		return fmt.Errorf("h2go: Session.setTransactionIsolation: session closed")
 	}
-	if err := ctx.Err(); err != nil {
+	cleanup := beginOperationContext(ctx, s.tr, nil)
+	defer cleanup()
+	defer s.finalizeContext(ctx, &err)
+
+	if err = ctx.Err(); err != nil {
 		return err
 	}
 	stmt := "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " + sqlLevel
-	_, err := s.ExecuteUpdate(ctx, stmt)
+	_, err = s.ExecuteUpdate(ctx, stmt)
 	if err != nil {
 		return wrapError("Session.setTransactionIsolation", err)
 	}

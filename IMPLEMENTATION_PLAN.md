@@ -678,7 +678,15 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - On cancellation of a running statement, send `SESSION_CANCEL_STATEMENT` on a side channel where feasible; otherwise mark the conn bad safely.
   - Return context errors; never leave the conn in an unknown-but-reused state.
 - **Deliverables:** context plumbing, tests (timeout mid-query, cancel before/after send).
+- **Implementation notes:**
+  - Added `HandshakeContext(ctx, cfg)` and switched `connector.Connect` to use it, so dial + H2 handshake respect the caller context and deadline.
+  - Added a small deadline watcher around every protocol operation that can block on the wire. It applies `SetDeadline` when the caller has a deadline and tightens it to `time.Now()` when `ctx.Done()` fires, so blocked reads/writes wake promptly.
+  - Added `Session.Abort()` and a `dead` session flag so a timed-out or canceled operation can tear down the transport immediately without attempting a protocol close; `conn.acquire()` treats dead sessions as `driver.ErrBadConn` so pooled reuse is blocked.
+  - Prepared query/update execution now launches a best-effort `SESSION_CANCEL_STATEMENT` side-channel using the current session id and command id when the context is canceled during a running statement.
+  - Query rows keep the deadline watcher alive until `Rows.Close()`, so cancellation during row streaming still invalidates the transport safely before the connection is returned to the pool.
+  - Added a unit test that lets `PrepareCommand` block on a `net.Pipe` server and verifies a deadline aborts the session and returns `context.DeadlineExceeded`.
 - **Done when:** Timeouts/cancels return context errors and leave conn state safe (bad conns discarded).
+- **Status:** ✅ Done — 2026-07-09
 
 ---
 
