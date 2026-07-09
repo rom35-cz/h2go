@@ -556,6 +556,24 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Verification: `go build ./...`, `go vet ./...`, `go test -race ./...`, `go test -tags integration ./...`, `golangci-lint run` all green. ✅
 - **Status:** ✅ Done — 2026-07-09
 
+### Phase 6 review
+- **Review date:** 2026-07-09
+- **Method:** Line-by-line audit of all Phase 6 files (`value_write.go`, `session.go`, `rows.go`, `conn.go`, `stmt.go`, `conn_test.go`, `stmt_test.go`, `value_write_test.go`, `integration_test.go`) against the H2 2.4.240 source (`Transfer.writeValue`, `TcpServerThread.process`) and the `database/sql/driver` contract.
+- **Cross-checks confirmed correct (no change needed):**
+  - `WriteValue` wire encoding matches `Transfer.writeValue` exactly for all MVP types: NULL=0, BOOLEAN=1, BIGINT=5, DOUBLE=7, NUMERIC string, VARCHAR, VARBINARY, UUID two-int64, DATE/TIME/TIMESTAMP/TIMESTAMP_TZ/TIME_TZ date+nanos+offset layout.
+  - `packDateValue` uses `(year<<9)|(month<<5)|day` — symmetric with `unpackDateValue`; arithmetic shifts handle negative (BCE) years correctly.
+  - `nanosOfDay` uses the wall-clock representation of the `time.Time` for both TIMESTAMP (local wall clock as UTC-like on the wire, consistent with JDBC behaviour) and TIMESTAMP_TZ (local wall clock + offset). This matches H2's `ValueTimestamp.getDateValue()` / `getTimeNanos()` semantics.
+  - `ExecuteUpdatePreparedWithParams` sends paramCount + each value encoded with metadata, then `GeneratedKeysNone` — matches `CommandRemote.sendParameters` + `TcpServerThread.setParameters`.
+  - `convertNamedValues` and `normalizeNamedValue` correctly validate positional-only args and reject named params with a clear error.
+  - `stmt.ExecContext`/`QueryContext` release the connection lock via `closeCallback`/`defer c.release()` — no lock leak.
+- **Two bugs found and repaired:**
+  1. **Bug (functional inconsistency) — `conn.QueryContext` returned `driver.ErrSkip` for all parameterised queries** (`conn.go`): The stale T5.3 comment and `ErrSkip` return were never removed when T6.2 added inline parameterised exec and T6.3 added prepared statements. With `NamedValueChecker` now implemented, returning `ErrSkip` causes `database/sql` to create a temporary `Stmt` (via `PrepareContext`) on every parameterised `db.QueryContext` call — correct but wasteful (extra Prepare+Close round-trip). Fixed by implementing the inline path in `QueryContext`, mirroring `ExecContext`, using the new `Session.ExecuteQueryWithParams` method. Regression test `TestConnQueryContextWithArgs` updated to assert no `ErrSkip` is returned.
+  2. **Bug (latent leak) — `stmt.Close()` returned a hard error and abandoned the server command when the connection was busy** (`stmt.go`): `s.closed` was set to `true` before `c.acquire()` was called, so if acquire failed (e.g. rows still open on the same connection), the command ID was discarded client-side but the server command was never freed. Fixed with best-effort semantics: if acquire fails, `Close()` returns `nil` and the server command is reclaimed when the session eventually closes (H2 GC behaviour).
+- **Code quality improvement — eliminated COMMAND_EXECUTE_QUERY wire duplication** (`rows.go`): The ~50-line COMMAND_EXECUTE_QUERY wire-write + response-read block was identical in `ExecuteQuery`, `ExecuteQueryPreparedWithParams`, and the new `ExecuteQueryWithParams`. Extracted into a private helper `executeQueryWire(ctx, cmd, maxRows, fetchSize, params, ownsCommand)`. All three entry points now delegate to it; the `ownsCommand` flag controls whether `Rows.Close()` will also send `COMMAND_CLOSE`.
+- **Live validation:** Added `TestIntegration_QueryContextWithParams` (direct `db.QueryContext` with `?` args, verifying inline path is used and results are correct). 18/18 integration tests pass against live H2 2.4.240.
+- **Test count after review:** 300 unit tests (+1 updated regression). All pass with `-race`.
+- **Verified:** `go build ./...`, `go vet ./...`, `golangci-lint run` (0 issues), `go test -race ./...`, `go test -tags integration -race ./...` (18/18 live) all green. ✅
+
 ---
 
 ## Phase 7 — Error handling

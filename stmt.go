@@ -18,6 +18,11 @@ type stmt struct {
 }
 
 // Close releases the server-side prepared command.
+//
+// If the connection is closed or already in use, Close makes a best-effort
+// attempt to send COMMAND_CLOSE and returns any resulting error.  In the busy
+// case the H2 server will reclaim orphaned commands when the session eventually
+// closes.
 func (s *stmt) Close() error {
 	s.mu.Lock()
 	if s.closed {
@@ -35,8 +40,16 @@ func (s *stmt) Close() error {
 		return nil
 	}
 
+	// conn.sess may already be nil (connection closed).
+	if c.sess == nil {
+		return nil
+	}
+
+	// Best-effort: if the connection is busy (e.g. caller closed the stmt while
+	// rows from it are still open), skip the wire close.  H2 reclaims server
+	// commands when the session closes.
 	if err := c.acquire(); err != nil {
-		return err
+		return nil // swallow; command will be freed on session close
 	}
 	defer c.release()
 

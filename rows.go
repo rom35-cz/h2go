@@ -414,81 +414,46 @@ func (s *Session) ExecuteQuery(ctx context.Context, sql string, maxRows int64, f
 		return nil, fmt.Errorf("h2go: ExecuteQuery: session closed")
 	}
 
-	// Prepare the command
 	cmd, err := s.PrepareCommand(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("h2go: ExecuteQuery: prepare failed: %w", err)
 	}
 
-	// Check if it's actually a query
 	if !cmd.IsQuery {
 		_ = cmd.Close(s)
 		return nil, fmt.Errorf("h2go: ExecuteQuery: command is not a query: %s", sql)
 	}
 
-	// Generate a result ID
-	resultID := s.nextCommandID()
+	return s.executeQueryWire(ctx, cmd, maxRows, fetchSize, nil, true)
+}
 
-	// Send COMMAND_EXECUTE_QUERY
-	if err := s.tr.WriteInt32(CommandExecuteQuery); err != nil {
-		_ = cmd.Close(s)
-		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write op: %w", err)
-	}
-	if err := s.tr.WriteInt32(cmd.ID); err != nil {
-		_ = cmd.Close(s)
-		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write command id: %w", err)
-	}
-	if err := s.tr.WriteInt32(resultID); err != nil {
-		_ = cmd.Close(s)
-		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write result id: %w", err)
-	}
-	if err := s.tr.WriteInt64(maxRows); err != nil {
-		_ = cmd.Close(s)
-		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write maxRows: %w", err)
-	}
-	if err := s.tr.WriteInt32(int32(fetchSize)); err != nil {
-		_ = cmd.Close(s)
-		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write fetchSize: %w", err)
-	}
-	// sendParameters: writeInt(paramCount=0) — no values for parameterless queries.
-	if err := s.tr.WriteInt32(0); err != nil {
-		_ = cmd.Close(s)
-		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to write paramCount: %w", err)
-	}
-	if err := s.tr.Flush(); err != nil {
-		_ = cmd.Close(s)
-		return nil, fmt.Errorf("h2go: ExecuteQuery: flush failed: %w", err)
+// ExecuteQueryWithParams prepares a parameterised query with
+// SESSION_PREPARE_READ_PARAMS2 (to obtain type metadata for encoding), executes
+// it with the supplied positional values, and returns the result set.  Because
+// this is an ad-hoc call the resulting Rows own the command and send
+// COMMAND_CLOSE when the rows are closed.
+func (s *Session) ExecuteQueryWithParams(ctx context.Context, sql string, maxRows int64, fetchSize int, params []driver.Value) (*Rows, error) {
+	if s.tr == nil {
+		return nil, fmt.Errorf("h2go: ExecuteQueryWithParams: session closed")
 	}
 
-	// Check context
-	select {
-	case <-ctx.Done():
-		_ = cmd.Close(s)
-		return nil, ctx.Err()
-	default:
-	}
-
-	// Read response: status then columnCount.
-	// Server: writeInt(status).writeInt(columnCount) per TcpServerThread.
-	if err := readStatus(s.tr); err != nil {
-		_ = cmd.Close(s)
-		return nil, fmt.Errorf("h2go: ExecuteQuery: %w", err)
-	}
-
-	columnCount, err := s.tr.ReadInt32()
+	cmd, err := s.PrepareCommandReadParams(ctx, sql)
 	if err != nil {
-		_ = cmd.Close(s)
-		return nil, fmt.Errorf("h2go: ExecuteQuery: failed to read column count: %w", err)
+		return nil, fmt.Errorf("h2go: ExecuteQueryWithParams: prepare failed: %w", err)
 	}
 
-	// Create Rows - this owns the command since it's an ad-hoc query
-	rows, err := NewRows(s, resultID, columnCount, fetchSize, true, cmd.ID)
-	if err != nil {
+	if !cmd.IsQuery {
 		_ = cmd.Close(s)
-		return nil, err
+		return nil, fmt.Errorf("h2go: ExecuteQueryWithParams: command is not a query: %s", sql)
 	}
 
-	return rows, nil
+	if int(cmd.ParamCount) != len(params) {
+		_ = cmd.Close(s)
+		return nil, fmt.Errorf("h2go: ExecuteQueryWithParams: expected %d params, got %d",
+			cmd.ParamCount, len(params))
+	}
+
+	return s.executeQueryWire(ctx, cmd, maxRows, fetchSize, params, true)
 }
 
 // ExecuteQueryPrepared executes a prepared query command without parameters
@@ -516,29 +481,61 @@ func (s *Session) ExecuteQueryPreparedWithParams(ctx context.Context, cmd *Prepa
 			cmd.ParamCount, len(params))
 	}
 
-	// Generate a result ID
+	return s.executeQueryWire(ctx, cmd, maxRows, fetchSize, params, false)
+}
+
+// executeQueryWire sends COMMAND_EXECUTE_QUERY for cmd and reads the initial
+// response frame, returning open Rows.
+//
+// ownsCommand controls whether Rows.Close will also send COMMAND_CLOSE:
+//   - true  for ad-hoc queries (ExecuteQuery, ExecuteQueryWithParams)
+//   - false for reusable prepared statements (ExecuteQueryPreparedWithParams)
+func (s *Session) executeQueryWire(ctx context.Context, cmd *PreparedCommand, maxRows int64, fetchSize int, params []driver.Value, ownsCommand bool) (*Rows, error) {
 	resultID := s.nextCommandID()
 
-	// Send COMMAND_EXECUTE_QUERY
-	if err := s.tr.WriteInt32(CommandExecuteQuery); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write op: %w", err)
-	}
-	if err := s.tr.WriteInt32(cmd.ID); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write command id: %w", err)
-	}
-	if err := s.tr.WriteInt32(resultID); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write result id: %w", err)
-	}
-	if err := s.tr.WriteInt64(maxRows); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write maxRows: %w", err)
-	}
-	if err := s.tr.WriteInt32(int32(fetchSize)); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write fetchSize: %w", err)
+	cmdIDForClose := int32(0)
+	if ownsCommand {
+		cmdIDForClose = cmd.ID
 	}
 
-	// sendParameters: writeInt(paramCount) + values.
+	// Build the COMMAND_EXECUTE_QUERY request.
+	if err := s.tr.WriteInt32(CommandExecuteQuery); err != nil {
+		if ownsCommand {
+			_ = cmd.Close(s)
+		}
+		return nil, fmt.Errorf("h2go: executeQueryWire: failed to write op: %w", err)
+	}
+	if err := s.tr.WriteInt32(cmd.ID); err != nil {
+		if ownsCommand {
+			_ = cmd.Close(s)
+		}
+		return nil, fmt.Errorf("h2go: executeQueryWire: failed to write command id: %w", err)
+	}
+	if err := s.tr.WriteInt32(resultID); err != nil {
+		if ownsCommand {
+			_ = cmd.Close(s)
+		}
+		return nil, fmt.Errorf("h2go: executeQueryWire: failed to write result id: %w", err)
+	}
+	if err := s.tr.WriteInt64(maxRows); err != nil {
+		if ownsCommand {
+			_ = cmd.Close(s)
+		}
+		return nil, fmt.Errorf("h2go: executeQueryWire: failed to write maxRows: %w", err)
+	}
+	if err := s.tr.WriteInt32(int32(fetchSize)); err != nil {
+		if ownsCommand {
+			_ = cmd.Close(s)
+		}
+		return nil, fmt.Errorf("h2go: executeQueryWire: failed to write fetchSize: %w", err)
+	}
+
+	// sendParameters: writeInt(paramCount) followed by each value.
 	if err := s.tr.WriteInt32(int32(len(params))); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to write paramCount: %w", err)
+		if ownsCommand {
+			_ = cmd.Close(s)
+		}
+		return nil, fmt.Errorf("h2go: executeQueryWire: failed to write paramCount: %w", err)
 	}
 	for i, p := range params {
 		var paramType *TypeInfo
@@ -546,33 +543,51 @@ func (s *Session) ExecuteQueryPreparedWithParams(ctx context.Context, cmd *Prepa
 			paramType = cmd.Params[i].TypeInfo
 		}
 		if err := s.tr.WriteValue(p, paramType); err != nil {
-			return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: encode param %d: %w", i+1, err)
+			if ownsCommand {
+				_ = cmd.Close(s)
+			}
+			return nil, fmt.Errorf("h2go: executeQueryWire: encode param %d: %w", i+1, err)
 		}
 	}
 
 	if err := s.tr.Flush(); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: flush failed: %w", err)
+		if ownsCommand {
+			_ = cmd.Close(s)
+		}
+		return nil, fmt.Errorf("h2go: executeQueryWire: flush failed: %w", err)
 	}
 
-	// Check context
+	// Check context cancellation after flush (before blocking on response).
 	select {
 	case <-ctx.Done():
+		if ownsCommand {
+			_ = cmd.Close(s)
+		}
 		return nil, ctx.Err()
 	default:
 	}
 
-	// Read response: status then columnCount.
+	// Server responds: writeInt(status) . writeInt(columnCount) . writeRowCount . columns . firstBatch
 	if err := readStatus(s.tr); err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: %w", err)
+		if ownsCommand {
+			_ = cmd.Close(s)
+		}
+		return nil, fmt.Errorf("h2go: executeQueryWire: %w", err)
 	}
 
 	columnCount, err := s.tr.ReadInt32()
 	if err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryPreparedWithParams: failed to read column count: %w", err)
+		if ownsCommand {
+			_ = cmd.Close(s)
+		}
+		return nil, fmt.Errorf("h2go: executeQueryWire: failed to read column count: %w", err)
 	}
 
-	rows, err := NewRows(s, resultID, columnCount, fetchSize, false, 0)
+	rows, err := NewRows(s, resultID, columnCount, fetchSize, ownsCommand, cmdIDForClose)
 	if err != nil {
+		if ownsCommand {
+			_ = cmd.Close(s)
+		}
 		return nil, err
 	}
 	return rows, nil

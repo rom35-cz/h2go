@@ -208,8 +208,9 @@ func TestConnPingBusy(t *testing.T) {
 	}
 }
 
-// TestConnQueryContextWithArgs verifies QueryContext returns ErrSkip
-// when arguments are provided (parameter support not yet implemented).
+// TestConnQueryContextWithArgs verifies QueryContext takes the parameterized
+// execution path inline (no ErrSkip). The mock session has no wire transport,
+// so the request fails with a transport error rather than ErrSkip.
 func TestConnQueryContextWithArgs(t *testing.T) {
 	c := &conn{
 		sess: &Session{id: "test-session"},
@@ -218,8 +219,11 @@ func TestConnQueryContextWithArgs(t *testing.T) {
 	_, err := c.QueryContext(context.Background(), "SELECT * FROM t WHERE id = ?", []driver.NamedValue{
 		{Name: "", Ordinal: 1, Value: int64(1)},
 	})
-	if err != driver.ErrSkip {
-		t.Errorf("expected ErrSkip for parameterized query, got %v", err)
+	if err == nil {
+		t.Fatal("expected execution error for mock session")
+	}
+	if errors.Is(err, driver.ErrSkip) {
+		t.Errorf("QueryContext with args must not return ErrSkip; got ErrSkip")
 	}
 }
 

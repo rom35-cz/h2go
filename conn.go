@@ -131,18 +131,33 @@ func (c *conn) release() {
 	c.busy = false
 }
 
-// QueryContext executes a query that may return rows, such as SELECT.
-// For MVP, this only supports parameterless queries. If args are provided
-// before Phase 6 parameter support is complete, it returns ErrSkip so
-// database/sql can fall back to Prepare + Query.
+// QueryContext executes a query that may return rows, such as a SELECT.
+// Parameterless queries are executed directly; queries with positional ? args
+// are encoded inline using the T6.1 value encoder (consistent with ExecContext).
 //
 // QueryContext implements driver.QueryerContext.
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if len(args) > 0 {
-		// Parameters not yet supported in T5.3; let database/sql fall back
-		return nil, driver.ErrSkip
+	if len(args) == 0 {
+		return c.queryContextInternal(ctx, query)
 	}
-	return c.queryContextInternal(ctx, query)
+
+	params, err := convertNamedValues(args)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := c.acquire(); err != nil {
+		return nil, err
+	}
+	// release happens in rows.Close() via closeCallback
+
+	rows, err := c.sess.ExecuteQueryWithParams(ctx, query, 0, defaultFetchSize, params)
+	if err != nil {
+		c.release()
+		return nil, err
+	}
+	rows.closeCallback = func() { c.release() }
+	return rows, nil
 }
 
 // queryContextInternal is the internal implementation for executing a query.

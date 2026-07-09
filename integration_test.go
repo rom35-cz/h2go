@@ -622,6 +622,77 @@ func TestIntegration_ExecContextWithParams(t *testing.T) {
 	}
 }
 
+// TestIntegration_QueryContextWithParams validates the inline parameterised
+// QueryContext path added in the Phase 6 review (Bug 1 fix).  This path is
+// distinct from the prepared-statement path used by TestIntegration_PreparedStatements.
+func TestIntegration_QueryContextWithParams(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS t64_qcp (
+		id INT PRIMARY KEY, name VARCHAR(50), score DOUBLE
+	)`)
+	if err != nil {
+		t.Fatalf("CREATE TABLE failed: %v", err)
+	}
+	defer func() { _, _ = db.ExecContext(ctx, "DROP TABLE IF EXISTS t64_qcp") }()
+	_, _ = db.ExecContext(ctx, "DELETE FROM t64_qcp")
+
+	for _, row := range []struct {
+		id    int
+		name  string
+		score float64
+	}{
+		{1, "alice", 9.5},
+		{2, "bob", 7.0},
+		{3, "carol", 8.25},
+	} {
+		_, err = db.ExecContext(ctx, "INSERT INTO t64_qcp VALUES (?, ?, ?)",
+			row.id, row.name, row.score)
+		if err != nil {
+			t.Fatalf("INSERT id=%d failed: %v", row.id, err)
+		}
+	}
+
+	// Parameterised QueryContext — goes through the inline path (not ErrSkip+Prepare).
+	rows, err := db.QueryContext(ctx,
+		"SELECT name, score FROM t64_qcp WHERE id > ? ORDER BY id", 1)
+	if err != nil {
+		t.Fatalf("QueryContext with param failed: %v", err)
+	}
+	defer rows.Close()
+
+	type got struct {
+		name  string
+		score float64
+	}
+	var results []got
+	for rows.Next() {
+		var g got
+		if err := rows.Scan(&g.name, &g.score); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		results = append(results, g)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	want := []got{{"bob", 7.0}, {"carol", 8.25}}
+	if len(results) != len(want) {
+		t.Fatalf("got %d rows, want %d", len(results), len(want))
+	}
+	for i, w := range want {
+		if results[i].name != w.name || results[i].score != w.score {
+			t.Fatalf("row %d: got %+v, want %+v", i, results[i], w)
+		}
+	}
+}
+
 // TestIntegration_PreparedStatements exercises prepare/exec/query/close paths.
 func TestIntegration_PreparedStatements(t *testing.T) {
 	env := integrationEnv(t)
