@@ -108,21 +108,33 @@ func TestConnCloseWithOpenTransaction(t *testing.T) {
 	}
 }
 
-// TestConnCloseWithOpenTransactionBusy verifies that Close skips the
-// best-effort rollback when a wire operation is already in flight (c.busy).
-// This prevents a concurrent Close from issuing a second rollback while
-// commit/rollback wire I/O is active on the transport.
+// TestConnCloseWithOpenTransactionBusy verifies that Close skips session
+// teardown entirely when a wire operation is in flight (c.busy), to avoid
+// racing on Session.tr from two goroutines simultaneously.
 func TestConnCloseWithOpenTransactionBusy(t *testing.T) {
 	c := &conn{
 		sess: &Session{id: "test-session", autoCommit: false},
 		busy: true,
 	}
 
-	// Close must not panic and must still nil sess.
+	// Close must not panic, must nil sess, and must not attempt any protocol I/O.
 	_ = c.Close()
 
 	if c.sess != nil {
 		t.Error("Close did not nil out sess")
+	}
+}
+
+// TestConnSessionDeadAfterAbort verifies that conn.acquire returns ErrBadConn
+// once the session has been aborted (dead flag set atomically).
+func TestConnSessionDeadAfterAbort(t *testing.T) {
+	c := &conn{sess: &Session{id: "test-session"}}
+
+	// Simulate the abort that finalizeContext would perform.
+	c.sess.Abort() //nolint:errcheck
+
+	if err := c.acquire(); err != driver.ErrBadConn {
+		t.Fatalf("expected ErrBadConn after Abort, got %v", err)
 	}
 }
 

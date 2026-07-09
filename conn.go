@@ -45,9 +45,20 @@ func (c *conn) Close() error {
 		return nil
 	}
 
+	// If an operation is currently in flight the caller must not close the
+	// connection concurrently; doing so would race on Session.tr.
+	// database/sql guarantees Close is never called while a connection is
+	// busy. This guard is purely defensive: abandon session state without
+	// touching the transport so the in-flight goroutine keeps a clean error.
+	if c.busy {
+		c.sess = nil
+		c.busy = false
+		return nil
+	}
+
 	// Roll back any open, idle transaction. Errors are ignored: the session
 	// is being destroyed regardless and H2 will roll back on TCP close anyway.
-	if !c.sess.autoCommit && !c.busy {
+	if !c.sess.autoCommit {
 		_ = c.sess.rollbackCurrentTransaction(context.Background())
 	}
 
@@ -188,7 +199,7 @@ func (c *conn) acquire() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.sess == nil || c.sess.dead {
+	if c.sess == nil || c.sess.dead.Load() {
 		return driver.ErrBadConn
 	}
 	if c.busy {

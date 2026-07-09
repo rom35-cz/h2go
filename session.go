@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,9 +23,9 @@ type Session struct {
 	id         string
 	version    int32
 	autoCommit bool
-	dead       bool
-	mu         sync.Mutex // protects nextID
-	nextID     int32      // incremented for each command ID
+	dead       atomic.Bool // atomically set by Close/Abort; read by conn.acquire
+	mu         sync.Mutex  // protects nextID
+	nextID     int32       // incremented for each command ID
 }
 
 // Close sends a graceful SESSION_CLOSE notification to the server and closes
@@ -40,12 +41,12 @@ type Session struct {
 // may add a configurable deadline on the STATUS_OK read.
 func (s *Session) Close() error {
 	if s.tr == nil {
-		s.dead = true
+		s.dead.Store(true)
 		return nil
 	}
 	tr := s.tr
 	s.tr = nil // prevent double-close
-	s.dead = true
+	s.dead.Store(true)
 
 	// Notify the server and drain its STATUS_OK reply. Errors are discarded:
 	// the transport must be closed regardless of the session state.
@@ -62,13 +63,13 @@ func (s *Session) Close() error {
 func (s *Session) Abort() error {
 	if s == nil || s.tr == nil {
 		if s != nil {
-			s.dead = true
+			s.dead.Store(true)
 		}
 		return nil
 	}
 	tr := s.tr
 	s.tr = nil
-	s.dead = true
+	s.dead.Store(true)
 	return tr.Abort()
 }
 

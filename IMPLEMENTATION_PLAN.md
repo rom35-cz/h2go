@@ -688,6 +688,20 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
 - **Done when:** Timeouts/cancels return context errors and leave conn state safe (bad conns discarded).
 - **Status:** ✅ Done — 2026-07-09
 
+### Phase 9 review
+- **Review date:** 2026-07-09
+- **Method:** Fresh-context parallel reviewer pass (two independent angles). Reviewed `context_io.go`, `session.go`, `transfer.go`, `handshake.go`, `conn.go`, `tx.go`, `rows.go`, `command.go`, `connector.go`, `integration_test.go`, and IMPLEMENTATION_PLAN.md Phase 9 sections.
+- **One flaw found and repaired:**
+  1. **Bug (medium) — `Session.dead` data race** (`session.go`, `conn.go`). `dead` was a plain `bool` field written by `Session.Abort()` / `Session.Close()` and read by `conn.acquire()`. Although the `acquire()`/`release()` sequencing ensures the race is not exercised under normal `database/sql` pool operation, the field lacked atomic protection: a defensive concurrent `conn.Close()` call (or future code path) could race on the write. Fixed by changing `dead` to `sync/atomic.Bool` and updating all reads (`c.sess.dead.Load()`) and writes (`s.dead.Store(true)`) accordingly. Simultaneously hardened `conn.Close()`: if `c.busy == true` (an operation is in flight), the function now returns immediately after nilling `c.sess`, without calling `c.sess.Close()` or touching `Session.tr`. This eliminates the theoretical race between `conn.Close()` writing `Session.tr = nil` and an operation goroutine reading `Session.tr`, which `database/sql` would never trigger but raw driver users could. Added `TestConnSessionDeadAfterAbort` and updated the existing `TestConnCloseWithOpenTransactionBusy` comment to reflect the stronger invariant.
+- **All other checks confirmed correct** (no further blockers):
+  - Double-close of `stop` channel: `executeQueryWire` only calls `cleanup()` when `rows == nil` (error path); on success the cleanup is assigned to `rows.contextCleanup` and `Rows.Close()` calls it exactly once. No double-close.
+  - Nested `beginOperationContext` watchers (rollback path): each call captures its own `stop` channel and transport reference; inner cleanup resets the deadline to zero but the outer watcher has already exited its `select` case before then. No incorrect deadline override.
+  - `tr.SetDeadline` after `Abort`: calling `SetDeadline` on a closed `net.Conn` returns an error (does not panic); all such calls use `_ =` discards. Safe.
+  - Cancel side-channel wire protocol: `cancelStatement` sends `minVer`, `maxVer`, null db, null url, session-id, `SESSION_CANCEL_STATEMENT`, statement-id — matching `TcpServerThread.java` exactly. `WriteNullString` emits int32 -1 which the server reads as a null string.
+  - Goroutine lifetime: every `beginOperationContext` watcher goroutine exits when either `ctx.Done()` fires or `stop` is closed by `cleanup()`; for rows the stop is closed in `Rows.Close()`.
+  - `HandshakeContext` deferred error override: inner blocks set the named `err` return before returning; the defer observes the final value of `err` correctly and aborts the transport on any failure.
+- **Verified:** `go build ./...`, `go vet ./...`, `golangci-lint run` (0 issues), `go test -race ./...`, `go test -tags integration -race ./...` (live H2 2.4.240) all green. ✅
+
 ---
 
 ## Phase 10 — Generated keys and metadata
