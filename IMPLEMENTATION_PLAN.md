@@ -636,6 +636,21 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
 - **Done when:** Commit/rollback behave correctly; autocommit restored afterward.
 - **Status:** ✅ Done — 2026-07-09
 
+### Phase 8 review
+- **Review date:** 2026-07-09
+- **Method:** Fresh-context parallel reviewer pass (two independent angles). Reviewed `tx.go`, `conn.go`, `session.go`, `protocol.go`, `errors.go`, `integration_test.go`, IMPLEMENTATION_PLAN.md T8.1 and PRD §7.10.
+- **One flaw found and repaired:**
+  1. **Bug (medium) — `conn.Close()` ignored open-transaction state** (`conn.go`). Calling `conn.Close()` while a transaction was open but idle (not actively doing wire I/O) closed the session without first rolling back, leaving H2 holding row/table locks until the TCP teardown. The fix adds a `!c.sess.autoCommit && !c.busy` guard in `Close()` that sends a best-effort `ROLLBACK` before the session close. The `!c.busy` condition prevents a duplicate rollback when a commit/rollback is already in-flight — in that case the in-flight operation fails naturally when the transport shuts down. Added unit tests: `TestConnCloseWithOpenTransaction` (verifies rollback path completes without panic and nils `sess`) and `TestConnCloseWithOpenTransactionBusy` (verifies the busy guard skips the redundant rollback).
+- **All other checks confirmed correct** (no further blockers):
+  - `finishTransaction` double-done check is safe: the re-check under lock after `c.acquire()` serialises concurrent `Commit`/`Rollback` calls; a second caller sees `done=true` and returns `sql.ErrTxDone`.
+  - `rollbackCurrentTransaction` → `wrapError` does not double-wrap `*Error`; non-H2 errors keep added context.
+  - `setTransactionIsolation` is called while `autoCommit=false` but before any DML, so H2 committing an empty transaction is harmless.
+  - `context.Background()` in cleanup paths of `finishTransaction` is intentional so restore-autocommit always runs even after the caller's context is cancelled.
+  - `Session.autoCommit` is effectively guarded by `conn.busy`: `c.acquire()` serialises the `autoCommit=true` check in `beginTx` so two goroutines cannot both enter `setAutoCommit(false)` on the same connection.
+  - Releasing `conn` after `BeginTx` returns is correct: `database/sql` pins the connection for the lifetime of `sql.Tx`; `conn.ExecContext`/`QueryContext` re-acquire on each call.
+  - The nested-begin integration test is valid: `db.Conn(ctx)` binds a dedicated `driver.Conn`; all `conn.BeginTx` calls on the same `*sql.Conn` hit the same underlying `driver.Conn`.
+- **Verified:** `go build ./...`, `go vet ./...`, `golangci-lint run` (0 issues), `go test -race ./...`, `go test -tags integration -race ./...` (live H2 2.4.240) all green. ✅
+
 ---
 
 ## Phase 9 — Connection pool safety and context

@@ -29,6 +29,13 @@ type conn struct {
 // Close closes the connection, sending SESSION_CLOSE to the server
 // and releasing the underlying TCP connection.
 //
+// If a transaction is open but idle (no wire operation currently in flight),
+// Close sends a best-effort ROLLBACK before ending the session so the H2
+// server releases locks immediately rather than waiting for the TCP teardown.
+// When a commit/rollback is already in flight (c.busy == true), the extra
+// rollback is skipped — the in-flight operation will naturally fail once
+// sess.Close() shuts the transport, and its error path will inform the caller.
+//
 // Close implements driver.Conn.
 func (c *conn) Close() error {
 	c.mu.Lock()
@@ -36,6 +43,12 @@ func (c *conn) Close() error {
 
 	if c.sess == nil {
 		return nil
+	}
+
+	// Roll back any open, idle transaction. Errors are ignored: the session
+	// is being destroyed regardless and H2 will roll back on TCP close anyway.
+	if !c.sess.autoCommit && !c.busy {
+		_ = c.sess.rollbackCurrentTransaction(context.Background())
 	}
 
 	err := c.sess.Close()

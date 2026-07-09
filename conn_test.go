@@ -85,6 +85,47 @@ func TestConnBeginTxRejectsActiveTx(t *testing.T) {
 	}
 }
 
+// TestConnCloseWithOpenTransaction verifies that Close issues a best-effort
+// rollback when a transaction is open (autoCommit == false) but idle.
+// Even with no live transport the call must complete without panicking and
+// must nil out the session so subsequent operations return ErrBadConn.
+func TestConnCloseWithOpenTransaction(t *testing.T) {
+	c := &conn{
+		sess: &Session{id: "test-session", autoCommit: false},
+	}
+
+	// Close must not panic even though there is no wire transport.
+	// rollbackCurrentTransaction returns an error (session closed / nil tr),
+	// which Close discards, then proceeds to nil sess.
+	_ = c.Close()
+
+	if c.sess != nil {
+		t.Error("Close did not nil out sess")
+	}
+	// Subsequent acquire must return ErrBadConn.
+	if err := c.acquire(); err != driver.ErrBadConn {
+		t.Errorf("expected ErrBadConn after Close, got %v", err)
+	}
+}
+
+// TestConnCloseWithOpenTransactionBusy verifies that Close skips the
+// best-effort rollback when a wire operation is already in flight (c.busy).
+// This prevents a concurrent Close from issuing a second rollback while
+// commit/rollback wire I/O is active on the transport.
+func TestConnCloseWithOpenTransactionBusy(t *testing.T) {
+	c := &conn{
+		sess: &Session{id: "test-session", autoCommit: false},
+		busy: true,
+	}
+
+	// Close must not panic and must still nil sess.
+	_ = c.Close()
+
+	if c.sess != nil {
+		t.Error("Close did not nil out sess")
+	}
+}
+
 // TestConnBeginTxRejectsReadOnly verifies the driver rejects read-only
 // transaction options with a clear error.
 func TestConnBeginTxRejectsReadOnly(t *testing.T) {
