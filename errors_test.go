@@ -53,6 +53,42 @@ func TestReadH2Error(t *testing.T) {
 	}
 }
 
+func TestReadStatusError_ReturnsH2Error(t *testing.T) {
+	// Encode a STATUS_ERROR frame: status code + readH2Error payload.
+	var buf bytes.Buffer
+	tr := NewWriter(&writeCloseBuffer{&buf})
+	_ = tr.WriteInt32(StatusError) // status
+	_ = tr.WriteString("42000")    // sqlState
+	_ = tr.WriteString("syntax error near TOKEN")
+	_ = tr.WriteString("SELECT * FORM t") // sql (intentional typo)
+	_ = tr.WriteInt32(42001)              // errorCode
+	_ = tr.WriteString("stack")           // stackTrace
+	_ = tr.Flush()
+
+	err := readStatus(mockTransferFromBytes(buf.Bytes()))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	var h2err *Error
+	if !errors.As(err, &h2err) {
+		t.Fatalf("expected *Error via errors.As, got %T: %v", err, err)
+	}
+	if h2err.SQLState != "42000" {
+		t.Errorf("SQLState = %q, want 42000", h2err.SQLState)
+	}
+	if h2err.Code != 42001 {
+		t.Errorf("Code = %d, want 42001", h2err.Code)
+	}
+	if !strings.Contains(h2err.Message, "syntax error") {
+		t.Errorf("Message = %q, want contains 'syntax error'", h2err.Message)
+	}
+	// *Error must also be directly type-assertable (no extra wrapping).
+	if _, ok := err.(*Error); !ok {
+		t.Errorf("err.(*Error) failed; got %T — readStatus must return bare *Error for STATUS_ERROR", err)
+	}
+}
+
 func TestReadStatusClosedReturnsErrClosed(t *testing.T) {
 	var buf bytes.Buffer
 	tr := NewWriter(&writeCloseBuffer{&buf})

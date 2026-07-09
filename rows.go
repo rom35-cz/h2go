@@ -420,7 +420,7 @@ func (s *Session) ExecuteQuery(ctx context.Context, sql string, maxRows int64, f
 
 	cmd, err := s.PrepareCommand(ctx, sql)
 	if err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQuery: prepare failed: %w", err)
+		return nil, wrapError("ExecuteQuery: prepare", err)
 	}
 
 	if !cmd.IsQuery {
@@ -443,7 +443,7 @@ func (s *Session) ExecuteQueryWithParams(ctx context.Context, sql string, maxRow
 
 	cmd, err := s.PrepareCommandReadParams(ctx, sql)
 	if err != nil {
-		return nil, fmt.Errorf("h2go: ExecuteQueryWithParams: prepare failed: %w", err)
+		return nil, wrapError("ExecuteQueryWithParams: prepare", err)
 	}
 
 	if !cmd.IsQuery {

@@ -3,8 +3,6 @@ package h2go
 import (
 	"errors"
 	"fmt"
-	"os"
-	"time"
 )
 
 // Error represents a structured error returned by the H2 server.
@@ -156,16 +154,3 @@ var (
 	// ErrClosed reports that the server/session connection has been closed.
 	ErrClosed = errors.New("connection closed")
 )
-
-// localTimeZoneID returns the system's local timezone identifier.
-// It first checks the TZ environment variable, then falls back to the
-// Go runtime's local timezone name, and ultimately to "UTC".
-func localTimeZoneID() string {
-	if tz := os.Getenv("TZ"); tz != "" {
-		return tz
-	}
-	if name := time.Local.String(); name != "Local" {
-		return name
-	}
-	return "UTC"
-}

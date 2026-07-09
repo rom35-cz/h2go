@@ -605,6 +605,16 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
 - **Done when:** Server errors expose SQLState + H2 code; unit tests decode a scripted error frame; integration test asserts a real syntax error surfaces code/state.
 - **Status:** ✅ Done — 2026-07-09
 
+### Phase 7 review
+- **Review date:** 2026-07-09
+- **Method:** Fresh-context parallel reviewer pass (two independent angles). Reviewed `errors.go`, `errors_test.go`, `handshake.go`, `conn.go`, `value_read.go`, `value_write.go`, `command.go`, `rows.go`, `session.go`, `integration_test.go` against IMPLEMENTATION_PLAN.md and PRD §7.13/§8.2.
+- **Four flaws found and repaired:**
+  1. **Bug (type visibility) — `ExecuteQuery` and `ExecuteQueryWithParams` wrapped server `*Error` values in `fmt.Errorf`** (`rows.go:423`, `rows.go:446`). A SQL error from `PrepareCommand`/`PrepareCommandReadParams` (already a bare `*Error` thanks to `wrapError` inside those functions) was then immediately re-wrapped with `fmt.Errorf("...prepare failed: %w", err)`, burying the `*Error` so callers could no longer do `err.(*Error)` directly. Fixed both sites to use `wrapError("...", err)` so the server error is returned unchanged. Verified with the new `TestIntegration_SQLError` test: `errors.As` and direct type assertion both work.
+  2. **Gap (test coverage) — no unit test for `readStatus` + `STATUS_ERROR` path** (`errors_test.go`). The `TestReadH2Error` test called `readH2Error` directly; no test exercised `readStatus(buf)` on a `STATUS_ERROR` frame to confirm the `*Error` comes back bare (not wrapped). Added `TestReadStatus_StatusError` which writes a full STATUS_ERROR frame, calls `readStatus`, and asserts both `errors.As` and direct `err.(*Error)` work.
+  3. **Gap (test coverage) — missing integration test for real SQL syntax error** (`integration_test.go`). T7.1's "done-when" required an integration test asserting a real syntax error surfaces SQLState/Code; none existed. Added `TestIntegration_SQLError`: executes deliberately invalid SQL, asserts `errors.As(err, &h2err)` succeeds and `h2err.SQLState` / `h2err.Code` are non-zero. Confirmed live against H2 2.4.240 (SQLState=42000, Code=42000).
+  4. **Cohesion — `localTimeZoneID` lived in `errors.go`** despite being a handshake timezone utility only used in `handshake.go`. Moved to `handshake.go`; removed the now-unnecessary `os` and `time` imports from `errors.go`.
+- **Verified:** `go build ./...`, `go vet ./...`, `golangci-lint run` (0 issues), `go test -race ./...`, `go test -tags integration -race ./...` (20/20 live against H2 2.4.240) all green. ✅
+
 ---
 
 ## Phase 8 — Transactions

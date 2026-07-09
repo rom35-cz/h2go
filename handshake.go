@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"os"
 	"strings"
+	"time"
 )
 
 // Handshake establishes a TCP connection to the H2 server and completes the
@@ -170,4 +172,18 @@ func generateSessionID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// localTimeZoneID returns the system's local timezone identifier used during
+// the SESSION_SET_ID handshake step (required for protocol 20+).
+// It checks the TZ environment variable first, then the Go runtime's local
+// timezone name, and ultimately falls back to "UTC".
+func localTimeZoneID() string {
+	if tz := os.Getenv("TZ"); tz != "" {
+		return tz
+	}
+	if name := time.Local.String(); name != "Local" {
+		return name
+	}
+	return "UTC"
 }

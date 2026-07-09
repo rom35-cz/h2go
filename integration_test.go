@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -968,4 +969,34 @@ func integrationDB(t *testing.T, env map[string]string) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// TestIntegration_SQLError verifies that a real H2 SQL error (syntax error)
+// is decoded into a structured *Error with a non-zero SQLState and Code.
+func TestIntegration_SQLError(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+
+	// Execute deliberately invalid SQL — H2 returns error code 42001 (syntax error).
+	_, err := db.ExecContext(context.Background(), "SELECT * FORM not_a_table WHERE !!")
+	if err == nil {
+		t.Fatal("expected SQL syntax error, got nil")
+	}
+
+	// The error must be reachable as *Error via errors.As so callers can inspect
+	// SQLState and Code without string parsing.
+	var h2err *Error
+	if !errors.As(err, &h2err) {
+		t.Fatalf("expected *Error via errors.As, got %T: %v", err, err)
+	}
+	if h2err.SQLState == "" {
+		t.Errorf("SQLState is empty — server error not decoded")
+	}
+	if h2err.Code == 0 {
+		t.Errorf("Code is 0 — server error code not decoded")
+	}
+	t.Logf("SQL error: SQLState=%s Code=%d Message=%s", h2err.SQLState, h2err.Code, h2err.Message)
 }
