@@ -53,27 +53,17 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 
 // Begin starts a new transaction.
 //
-// Note: This is a placeholder implementation that returns an error
-// indicating transactions are not yet supported. Full transaction
-// support will be implemented in Phase 8 (T8.1). Until then,
-// operations run in autocommit mode as returned by the server
-// handshake.
-//
 // Begin implements driver.Conn.
 func (c *conn) Begin() (driver.Tx, error) {
-	return nil, fmt.Errorf("h2go: Begin: %w (transactions coming in Phase 8)", ErrNotYetSupported)
+	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
 
 // BeginTx begins a new transaction with the provided context and
 // transaction options.
 //
-// Note: This is a placeholder implementation that returns an error
-// indicating transactions are not yet supported. Full transaction
-// support will be implemented in Phase 8 (T8.1).
-//
 // BeginTx implements driver.ConnBeginTx.
-func (c *conn) BeginTx(_ context.Context, _ driver.TxOptions) (driver.Tx, error) {
-	return nil, fmt.Errorf("h2go: BeginTx: %w (transactions coming in Phase 8)", ErrNotYetSupported)
+func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	return beginTx(ctx, c, opts)
 }
 
 // PrepareContext prepares a statement with the provided context.

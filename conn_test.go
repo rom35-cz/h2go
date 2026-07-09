@@ -37,33 +37,79 @@ func TestConnPrepareSessionClosed(t *testing.T) {
 	}
 }
 
-// TestConnBeginNotSupported verifies Begin returns not-yet-supported error.
-func TestConnBeginNotSupported(t *testing.T) {
+// TestConnBeginSessionClosed verifies Begin returns a session/transport error
+// when the connection has a session but no live transport.
+func TestConnBeginSessionClosed(t *testing.T) {
 	c := &conn{
-		sess: &Session{id: "test-session"},
+		sess: &Session{id: "test-session", autoCommit: true},
 	}
 
 	_, err := c.Begin()
 	if err == nil {
-		t.Fatal("expected error for not-yet-supported Begin")
+		t.Fatal("expected error for Begin on a mock session")
 	}
-	if !errors.Is(err, ErrNotYetSupported) {
-		t.Errorf("expected ErrNotYetSupported, got %v", err)
+	if !strings.Contains(err.Error(), "session closed") {
+		t.Errorf("expected session closed error, got %v", err)
 	}
 }
 
-// TestConnBeginTxNotSupported verifies BeginTx returns not-yet-supported error.
-func TestConnBeginTxNotSupported(t *testing.T) {
+// TestConnBeginTxSessionClosed verifies BeginTx returns a session/transport
+// error when the connection has a session but no live transport.
+func TestConnBeginTxSessionClosed(t *testing.T) {
 	c := &conn{
-		sess: &Session{id: "test-session"},
+		sess: &Session{id: "test-session", autoCommit: true},
 	}
 
 	_, err := c.BeginTx(context.Background(), driver.TxOptions{})
 	if err == nil {
-		t.Fatal("expected error for not-yet-supported BeginTx")
+		t.Fatal("expected error for BeginTx on a mock session")
 	}
-	if !errors.Is(err, ErrNotYetSupported) {
-		t.Errorf("expected ErrNotYetSupported, got %v", err)
+	if !strings.Contains(err.Error(), "session closed") {
+		t.Errorf("expected session closed error, got %v", err)
+	}
+}
+
+// TestConnBeginTxRejectsActiveTx verifies nested BeginTx calls are rejected
+// when the session is already in non-autocommit mode.
+func TestConnBeginTxRejectsActiveTx(t *testing.T) {
+	c := &conn{
+		sess: &Session{id: "test-session", autoCommit: false},
+	}
+
+	_, err := c.BeginTx(context.Background(), driver.TxOptions{})
+	if err == nil {
+		t.Fatal("expected error for BeginTx while transaction is active")
+	}
+	if !strings.Contains(err.Error(), "transaction already active") {
+		t.Errorf("expected active transaction error, got %v", err)
+	}
+}
+
+// TestConnBeginTxRejectsReadOnly verifies the driver rejects read-only
+// transaction options with a clear error.
+func TestConnBeginTxRejectsReadOnly(t *testing.T) {
+	c := &conn{sess: &Session{id: "test-session", autoCommit: true}}
+
+	_, err := c.BeginTx(context.Background(), driver.TxOptions{ReadOnly: true})
+	if err == nil {
+		t.Fatal("expected error for read-only BeginTx")
+	}
+	if !strings.Contains(err.Error(), "read-only transactions are not supported") {
+		t.Errorf("expected read-only error, got %v", err)
+	}
+}
+
+// TestConnBeginTxRejectsUnsupportedIsolation verifies unsupported isolation
+// levels return a clear error before any wire I/O happens.
+func TestConnBeginTxRejectsUnsupportedIsolation(t *testing.T) {
+	c := &conn{sess: &Session{id: "test-session", autoCommit: true}}
+
+	_, err := c.BeginTx(context.Background(), driver.TxOptions{Isolation: driver.IsolationLevel(999)})
+	if err == nil {
+		t.Fatal("expected error for unsupported isolation BeginTx")
+	}
+	if !strings.Contains(err.Error(), "unknown isolation level") {
+		t.Errorf("expected unknown isolation error, got %v", err)
 	}
 }
 

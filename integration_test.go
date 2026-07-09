@@ -955,6 +955,125 @@ func TestIntegration_NullDecoding(t *testing.T) {
 	t.Log("null decoding passed")
 }
 
+// integrationTxTableName returns a unique, unquoted table name for transaction tests.
+func integrationTxTableName(prefix string) string {
+	return prefix + "_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+}
+
+// TestIntegration_TransactionCommit verifies that a transaction commit persists
+// changes and returns the connection to autocommit mode.
+func TestIntegration_TransactionCommit(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	table := integrationTxTableName("tx_commit")
+	if _, err := conn.ExecContext(ctx, "CREATE TABLE "+table+" (id INT PRIMARY KEY, note VARCHAR(64))"); err != nil {
+		t.Fatalf("CREATE TABLE: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = conn.ExecContext(context.Background(), "DROP TABLE IF EXISTS "+table)
+	})
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO "+table+" (id, note) VALUES (?, ?)", 1, "committed"); err != nil {
+		t.Fatalf("tx.ExecContext: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	var note string
+	if err := conn.QueryRowContext(ctx, "SELECT note FROM "+table+" WHERE id = 1").Scan(&note); err != nil {
+		t.Fatalf("QueryRowContext: %v", err)
+	}
+	if note != "committed" {
+		t.Fatalf("note = %q, want committed", note)
+	}
+}
+
+// TestIntegration_TransactionRollback verifies that rollback discards changes.
+func TestIntegration_TransactionRollback(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	table := integrationTxTableName("tx_rollback")
+	if _, err := conn.ExecContext(ctx, "CREATE TABLE "+table+" (id INT PRIMARY KEY, note VARCHAR(64))"); err != nil {
+		t.Fatalf("CREATE TABLE: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = conn.ExecContext(context.Background(), "DROP TABLE IF EXISTS "+table)
+	})
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO "+table+" (id, note) VALUES (?, ?)", 1, "rolled back"); err != nil {
+		t.Fatalf("tx.ExecContext: %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	var count int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table+" WHERE id = 1").Scan(&count); err != nil {
+		t.Fatalf("QueryRowContext: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 after rollback", count)
+	}
+}
+
+// TestIntegration_TransactionNestedBeginRejected verifies the same raw
+// connection cannot start a second transaction while one is already open.
+func TestIntegration_TransactionNestedBeginRejected(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("conn.BeginTx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := conn.BeginTx(ctx, nil); err == nil {
+		t.Fatal("expected error when starting a nested transaction on the same connection")
+	}
+}
+
 // integrationDB opens a *sql.DB from env credentials and registers a cleanup.
 func integrationDB(t *testing.T, env map[string]string) *sql.DB {
 	t.Helper()

@@ -627,7 +627,14 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Reject unsupported isolation levels / read-only options with clear errors; map supported ones.
   - Prevent pooled reuse while a tx is open.
 - **Deliverables:** `tx.go`, integration tests (commit persists, rollback discards, nested-begin rejected).
+- **Implementation notes:**
+  - Added `tx` as a small driver-owned state object with `done` guarding double Commit/Rollback and `restoreIsolation` tracking whether a transaction requested a non-default isolation level.
+  - `BeginTx` now validates read-only and isolation options up front, flips H2 autocommit off first, then applies requested isolation via `SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL ...` for supported levels (`READ UNCOMMITTED`, `REPEATABLE READ`, `SNAPSHOT`, `SERIALIZABLE`). Unsupported `WRITE COMMITTED` and `LINEARIZABLE` return a clear error.
+  - `Commit` sends `COMMAND_COMMIT`; `Rollback` uses the SQL `ROLLBACK` path. On success they restore isolation (when needed) and autocommit back to `true` on the same raw H2 connection before returning. If the commit/rollback opcode itself fails, the driver now avoids a potentially unsafe autocommit flip so a later reset can clean up the session instead of accidentally committing a failed rollback.
+  - Added unit coverage for session-closed begin, active-transaction rejection, read-only rejection, and unsupported-isolation rejection.
+  - Added live integration coverage on a pinned `*sql.Conn`: commit persists changes, rollback discards them, and nested begin is rejected on the same physical connection.
 - **Done when:** Commit/rollback behave correctly; autocommit restored afterward.
+- **Status:** ✅ Done — 2026-07-09
 
 ---
 
