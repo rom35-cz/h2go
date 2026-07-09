@@ -88,10 +88,14 @@ func (s *Session) readGeneratedKeyRow(meta *ResultMeta) ([]driver.Value, error) 
 }
 
 func (s *Session) discardGeneratedKeyRows(meta *ResultMeta, rowCount int64) error {
-	if rowCount == 0 {
+	// H2's sendRows(result, count) with count <= 0 exits its while-loop
+	// immediately and writes no row bytes at all.
+	// rowCount = 0  → INSERT affected 0 rows, or DELETE/UPDATE with no keys.
+	// rowCount < 0  → should not happen for LocalResult generated-key results,
+	//                 but treat defensively: no bytes to consume.
+	if rowCount <= 0 {
 		return nil
 	}
-
 	readRow := func() error {
 		rowFlag, err := s.tr.ReadByte()
 		if err != nil {
@@ -120,16 +124,9 @@ func (s *Session) discardGeneratedKeyRows(meta *ResultMeta, rowCount int64) erro
 	}
 
 	if rowCount < 0 {
-		for {
-			err := readRow()
-			if err == nil {
-				continue
-			}
-			if _, ok := err.(ioEOF); ok {
-				return nil
-			}
-			return err
-		}
+		// rowCount < 0 is already excluded by the rowCount <= 0 guard above.
+		// This branch is unreachable but kept for clarity.
+		return nil
 	}
 
 	for i := int64(0); i < rowCount; i++ {

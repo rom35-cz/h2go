@@ -396,6 +396,10 @@ func TestTypeInfo_HasPrecisionScale(t *testing.T) {
 	}{
 		{ValueTypeNumeric, true},
 		{ValueTypeDecfloat, true},
+		{ValueTypeTimestamp, true},
+		{ValueTypeTimestampTZ, true},
+		{ValueTypeTime, true},
+		{ValueTypeTimeTZ, true},
 		{ValueTypeInteger, false},
 		{ValueTypeVarchar, false},
 	}
@@ -411,27 +415,52 @@ func TestTypeInfo_HasPrecisionScale(t *testing.T) {
 
 // TestTypeInfo_PrecisionScale tests returning precision and scale.
 func TestTypeInfo_PrecisionScale(t *testing.T) {
-	// NUMERIC with precision/scale
+	// NUMERIC with known precision/scale
 	info := &TypeInfo{ValueType: ValueTypeNumeric, Precision: 15, Scale: 5}
 	prec, scale, ok := info.PrecisionScale()
 	if !ok {
-		t.Error("Expected ok=true for NUMERIC")
+		t.Error("Expected ok=true for NUMERIC(15,5)")
 	}
 	if prec != 15 || scale != 5 {
 		t.Errorf("PrecisionScale: got (%d, %d), want (15, 5)", prec, scale)
 	}
 
-	// TIMESTAMP WITH TIME ZONE exposes fractional-second scale.
+	// NUMERIC with unknown precision (manually constructed — e.g. from tests or
+	// future wire formats that omit precision).
+	info = &TypeInfo{ValueType: ValueTypeNumeric, Precision: -1, Scale: -1}
+	_, _, ok = info.PrecisionScale()
+	if ok {
+		t.Error("Expected ok=false for NUMERIC with unknown precision")
+	}
+
+	// DECFLOAT reports precision but no fixed scale.
+	info = &TypeInfo{ValueType: ValueTypeDecfloat, Precision: 34, Scale: -1}
+	prec, scale, ok = info.PrecisionScale()
+	if !ok {
+		t.Error("Expected ok=true for DECFLOAT(34)")
+	}
+	if prec != 34 || scale != 0 {
+		t.Errorf("PrecisionScale DECFLOAT: got (%d, %d), want (34, 0)", prec, scale)
+	}
+
+	// TIMESTAMP WITH TIME ZONE — explicit scale.
 	info = &TypeInfo{ValueType: ValueTypeTimestampTZ, Precision: -1, Scale: 6}
 	prec, scale, ok = info.PrecisionScale()
 	if !ok {
-		t.Error("Expected ok=true for TIMESTAMP WITH TIME ZONE")
+		t.Error("Expected ok=true for TIMESTAMP WITH TIME ZONE (scale=6)")
 	}
 	if prec != 0 || scale != 6 {
 		t.Errorf("PrecisionScale: got (%d, %d), want (0, 6)", prec, scale)
 	}
 
-	// INTEGER - no precision/scale
+	// TIMESTAMP without explicit scale (wire sends 0xFF → Scale=-1).
+	info = &TypeInfo{ValueType: ValueTypeTimestamp, Precision: -1, Scale: -1}
+	_, _, ok = info.PrecisionScale()
+	if ok {
+		t.Error("Expected ok=false for TIMESTAMP with unknown scale")
+	}
+
+	// INTEGER - not a precision/scale type.
 	info = &TypeInfo{ValueType: ValueTypeInteger, Precision: 10, Scale: 0}
 	_, _, ok = info.PrecisionScale()
 	if ok {

@@ -41,6 +41,9 @@ func (r *result) LastInsertId() (int64, error) {
 //
 // RowsAffected implements driver.Result.
 func (r *result) RowsAffected() (int64, error) {
+	if r == nil {
+		return 0, nil
+	}
 	return r.affected, nil
 }
 

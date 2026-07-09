@@ -719,6 +719,9 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Added live integration coverage for a numeric `AUTO_INCREMENT` table and a non-numeric primary-key table; numeric inserts return the generated id, while non-numeric keys return the documented unavailable error.
 - **Done when:** `LastInsertId()` returns the id for numeric single-key inserts; documented error otherwise.
 - **Status:** ✅ Done — 2026-07-09
+- **Phase-10 review repairs (2026-07-09):**
+  - **`discardGeneratedKeyRows` negative-rowCount hang**: H2's `sendRows(result, count)` in Java exits its `while (count-- > 0L)` loop immediately when `count ≤ 0` and writes nothing. The previous code entered an infinite stream-reading loop for `rowCount < 0`, which would deadlock. Fixed: treat `rowCount ≤ 0` as "nothing to discard".
+  - **`result.RowsAffected()` nil inconsistency**: `LastInsertId()` already guarded against a nil receiver; `RowsAffected()` did not. Added nil check for symmetry.
 
 ### T10.2 Column type metadata interfaces
 - **Goal:** Expose H2 column metadata to `database/sql`.
@@ -733,6 +736,11 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Added unit tests for `TypeInfo.ScanType()`, `Rows.ColumnTypeScanType()`, and time-based precision/scale handling, plus a live integration test that checks `sql.Rows.ColumnTypes()` against a real H2 table for type names, length, precision/scale, and scan hints.
 - **Done when:** `ColumnTypes()` reports correct names/nullability/precision/scale/scan types for MVP types.
 - **Status:** ✅ Done — 2026-07-09
+- **Phase-10 review repairs (2026-07-09):**
+  - **DECFLOAT scale leakage**: `PrecisionScale()` grouped DECFLOAT with NUMERIC in one case. DECFLOAT's wire format only sends a precision byte; `Scale` stays `-1` after decode. The old code returned `(precision, -1, true)` — a negative scale leaked to `sql.ColumnType.DecimalSize()`. Fixed: DECFLOAT is now handled separately and returns `(precision, 0, true)` (DECFLOAT has no fixed decimal scale).
+  - **Unknown precision/scale returned as `ok=true`**: when `Precision < 0` for NUMERIC or `Scale < 0` for time types (wire sends `0xFF`, meaning "not specified"), the old code returned `(0, 0, true)` — falsely claiming known-zero values. Fixed: return `(0, 0, false)` in both cases.
+  - **`HasPrecisionScale` test coverage**: added time-type cases (`TIMESTAMP`, `TIMESTAMP WITH TIME ZONE`, `TIME`, `TIME WITH TIME ZONE`) that were missing after time types were added to the list.
+  - **`TestTypeInfo_PrecisionScale` coverage**: added cases for DECFLOAT, NUMERIC with unknown precision, and TIMESTAMP with unknown scale.
 
 ---
 

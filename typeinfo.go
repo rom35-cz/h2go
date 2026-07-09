@@ -446,20 +446,36 @@ func (ti *TypeInfo) HasPrecisionScale() bool {
 }
 
 // PrecisionScale returns the precision and scale for this type.
-// If the type doesn't have precision/scale, returns (0, 0, false).
+// If the type doesn't have precision/scale, or the values are not known from
+// the wire, returns (0, 0, false).
 func (ti *TypeInfo) PrecisionScale() (precision, scale int64, ok bool) {
 	if ti == nil || !ti.HasPrecisionScale() {
 		return 0, 0, false
 	}
 	switch ti.ValueType {
-	case ValueTypeNumeric, ValueTypeDecfloat:
+	case ValueTypeNumeric:
+		// Both precision and scale are always present in the wire for NUMERIC,
+		// but guard against manually constructed TypeInfo with unknown values.
 		if ti.Precision < 0 {
-			return 0, 0, true
+			return 0, 0, false
 		}
-		return ti.Precision, int64(ti.Scale), true
+		s := int64(ti.Scale)
+		if s < 0 {
+			s = 0
+		}
+		return ti.Precision, s, true
+	case ValueTypeDecfloat:
+		// DECFLOAT carries precision only (no fixed scale). Scale is -1 after
+		// wire decode because the wire only sends the precision byte.
+		if ti.Precision < 0 {
+			return 0, 0, false
+		}
+		return ti.Precision, 0, true
 	case ValueTypeTime, ValueTypeTimeTZ, ValueTypeTimestamp, ValueTypeTimestampTZ:
+		// The scale byte is 0xFF when no fractional-second precision was
+		// specified in the DDL, which maps to Scale = -1 after decode.
 		if ti.Scale < 0 {
-			return 0, 0, true
+			return 0, 0, false
 		}
 		return 0, int64(ti.Scale), true
 	default:
