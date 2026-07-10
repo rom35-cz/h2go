@@ -824,6 +824,11 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Tag `v0.1.0`.
 - **Deliverables:** `CHANGELOG.md`, git tag.
 - **Done when:** Tagged release; local `make` targets green; MVP acceptance criteria satisfied.
+- **Implementation notes:**
+  - Added `CHANGELOG.md` with the initial `v0.1.0` MVP release notes and feature summary.
+  - Verified the release candidate with `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race ./...`, and `go test -tags integration -race ./...`.
+  - Tagged the release as `v0.1.0` after the changelog update and validation.
+- **Status:** ✅ Done — 2026-07-10
 
 ---
 
