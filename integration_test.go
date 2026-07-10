@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1000,6 +1001,108 @@ func TestIntegration_ScalarTypeDecoding(t *testing.T) {
 	t.Log("scalar type decoding passed")
 }
 
+// TestIntegration_ScalarRoundTripTable exercises representative scalar round
+// trips through the server with a table-driven matrix. It focuses on small,
+// easily reproducible cases so failures point to a specific H2 type family.
+func TestIntegration_ScalarRoundTripTable(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	cases := []struct {
+		name  string
+		query string
+		args  []any
+		scan  func(*testing.T, *sql.Row)
+	}{
+		{
+			name:  "boolean",
+			query: "SELECT CAST(? AS BOOLEAN)",
+			args:  []any{true},
+			scan: func(t *testing.T, row *sql.Row) {
+				t.Helper()
+				var got bool
+				if err := row.Scan(&got); err != nil {
+					t.Fatalf("Scan: %v", err)
+				}
+				if !got {
+					t.Fatal("expected true")
+				}
+			},
+		},
+		{
+			name:  "bigint",
+			query: "SELECT CAST(? AS BIGINT)",
+			args:  []any{int64(9000000000)},
+			scan: func(t *testing.T, row *sql.Row) {
+				t.Helper()
+				var got int64
+				if err := row.Scan(&got); err != nil {
+					t.Fatalf("Scan: %v", err)
+				}
+				if got != 9000000000 {
+					t.Fatalf("got %d, want 9000000000", got)
+				}
+			},
+		},
+		{
+			name:  "numeric",
+			query: "SELECT CAST(? AS NUMERIC(9,4))",
+			args:  []any{"12345.6789"},
+			scan: func(t *testing.T, row *sql.Row) {
+				t.Helper()
+				var got string
+				if err := row.Scan(&got); err != nil {
+					t.Fatalf("Scan: %v", err)
+				}
+				if got != "12345.6789" {
+					t.Fatalf("got %q, want 12345.6789", got)
+				}
+			},
+		},
+		{
+			name:  "varchar",
+			query: "SELECT CAST(? AS VARCHAR)",
+			args:  []any{"hello world"},
+			scan: func(t *testing.T, row *sql.Row) {
+				t.Helper()
+				var got string
+				if err := row.Scan(&got); err != nil {
+					t.Fatalf("Scan: %v", err)
+				}
+				if got != "hello world" {
+					t.Fatalf("got %q, want hello world", got)
+				}
+			},
+		},
+		{
+			name:  "varbinary",
+			query: "SELECT CAST(? AS VARBINARY)",
+			args:  []any{[]byte{0xDE, 0xAD, 0xBE, 0xEF}},
+			scan: func(t *testing.T, row *sql.Row) {
+				t.Helper()
+				var got []byte
+				if err := row.Scan(&got); err != nil {
+					t.Fatalf("Scan: %v", err)
+				}
+				if fmt.Sprintf("%X", got) != "DEADBEEF" {
+					t.Fatalf("got %X, want DEADBEEF", got)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			row := db.QueryRowContext(ctx, tc.query, tc.args...)
+			tc.scan(t, row)
+		})
+	}
+}
+
 // TestIntegration_NullDecoding verifies NULL values decode to nil across types.
 func TestIntegration_NullDecoding(t *testing.T) {
 	env := integrationEnv(t)
@@ -1328,6 +1431,66 @@ func TestIntegration_ValidatorReportsLiveSession(t *testing.T) {
 	}
 	if !valid {
 		t.Fatal("expected IsValid to report true for a live session")
+	}
+}
+
+// TestIntegration_ConnectionPoolStress exercises repeated pool acquisition and
+// release across several goroutines to catch reuse/cleanup regressions under
+// load. It intentionally keeps the workload small so it remains fast in local
+// integration runs while still hitting the driver pool hooks many times.
+func TestIntegration_ConnectionPoolStress(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const workers = 4
+	const iterations = 6
+	errCh := make(chan error, workers*iterations)
+	var wg sync.WaitGroup
+
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for iter := 0; iter < iterations; iter++ {
+				iterCtx, iterCancel := context.WithTimeout(ctx, 5*time.Second)
+				conn, err := db.Conn(iterCtx)
+				if err != nil {
+					iterCancel()
+					errCh <- fmt.Errorf("worker %d iter %d db.Conn: %w", worker, iter, err)
+					return
+				}
+
+				var got int64
+				err = conn.QueryRowContext(iterCtx, "SELECT 1").Scan(&got)
+				if err == nil && got != 1 {
+					err = fmt.Errorf("worker %d iter %d SELECT 1 got %d, want 1", worker, iter, got)
+				}
+				closeErr := conn.Close()
+				iterCancel()
+				if err != nil {
+					errCh <- fmt.Errorf("worker %d iter %d query: %w", worker, iter, err)
+					return
+				}
+				if closeErr != nil {
+					errCh <- fmt.Errorf("worker %d iter %d conn.Close: %w", worker, iter, closeErr)
+					return
+				}
+			}
+		}(worker)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
 	}
 }
 

@@ -1,4 +1,4 @@
-.PHONY: build vet lint test test-race test-integration db-seed clean
+.PHONY: build vet lint test test-race test-integration test-integration-race db-seed clean
 
 build:
 	go build ./...
@@ -24,6 +24,12 @@ test-integration:
 	if [ -f h2-data/.env ]; then . ./h2-data/.env; fi; \
 	set +a; \
 	go test -tags=integration ./...
+
+test-integration-race:
+	@set -a; \
+	if [ -f h2-data/.env ]; then . ./h2-data/.env; fi; \
+	set +a; \
+	go test -tags=integration -race ./...
 
 clean:
 	go clean ./...

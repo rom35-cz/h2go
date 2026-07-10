@@ -783,6 +783,11 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Add a small connection-pool stress test and a scalar round-trip table test.
 - **Deliverables:** complete `*_test.go` set; `make test-integration` green locally.
 - **Done when:** All categories present and passing under `-race` with H2 running.
+- **Implementation notes:**
+  - Existing integration coverage already exercised most PRD §9.3 categories; this task closed the remaining gaps with a dedicated connection-pool stress test and a table-driven scalar round-trip matrix.
+  - Added `test-integration-race` to the `Makefile` so the full integration suite can be run under the race detector with the local H2 environment in one command.
+  - Verified locally with H2 2.4.240: `go test ./...`, `go test -race ./...`, `go test -tags integration -race ./...`, and `make test-integration-race` all pass.
+- **Status:** ✅ Done — 2026-07-10
 
 ### T12.2 Acceptance-criteria verification
 - **Goal:** Prove PRD §10 acceptance criteria.
