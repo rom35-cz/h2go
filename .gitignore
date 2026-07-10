@@ -31,3 +31,4 @@ h2database/
 
 # Logs
 *.log
+.pi-subagents/

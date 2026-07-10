@@ -13,7 +13,7 @@ const redactedValue = "[REDACTED]"
 
 var (
 	jdbcPasswordPattern  = regexp.MustCompile(`(?i)(;PASSWORD=)[^;]*`)
-	urlUserInfoPattern   = regexp.MustCompile(`(?i)(h2(?:\+tcp)?://[^/@:]+:)[^@/]*(@)`)
+	urlUserInfoPattern   = regexp.MustCompile(`(?i)(h2(?:\+tcp|:tcp)?://[^/@:]+:)[^@/]*(@)`)
 	queryPasswordPattern = regexp.MustCompile(`(?i)([?&](?:password|passwd|pass|pwd)=)[^&]*`)
 )
 

@@ -32,7 +32,6 @@ func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 	logConfig(c.cfg, slog.LevelDebug, "connect starting")
 	sess, err := HandshakeContext(ctx, c.cfg)
 	if err != nil {
-		logConfig(c.cfg, slog.LevelError, "connect failed", slog.Any("error", err))
 		return nil, err
 	}
 

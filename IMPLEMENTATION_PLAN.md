@@ -767,6 +767,10 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
     - protocol/target metadata presence.
 - **Done when:** Enabling a logger emits text records; disabled path is silent; secrets never logged.
 - **Status:** ✅ Done — 2026-07-10
+- **Phase-11 review repairs (2026-07-10):**
+  - **JDBC userinfo redaction gap**: `redactSensitiveString`'s `urlUserInfoPattern` only matched `h2://` and `h2+tcp://` URL forms, but not the JDBC inner form `h2:tcp://user:pass@host` (as in `jdbc:h2:tcp://sa:secret@host:9092/db`). Passwords embedded in JDBC userinfo URLs would leak into diagnostic output. Fixed: the regex alternation now includes `:tcp` → `h2(?:\+tcp|:tcp)?://`.
+  - **Double/triple error logging**: A failed connection attempt could emit up to 3 error records: `handshake dial failed` + `handshake failed` (from `HandshakeContext` defer) + `connect failed` (from `connector.Connect`). The `handshake dial failed` log fires before the defer is registered (dial returns early), so it is NOT duplicated by the defer — but `connect failed` in `connector.Connect` duplicated every handshake error. Fixed: removed `connect failed` from `connector.Connect`; `HandshakeContext` is now the single error-logging point (dial-failure specific log for early returns, defer log for post-dial errors).
+  - **Test coverage**: expanded `TestRedactSensitiveString` into a table-driven test with 6 cases (native userinfo, native+tcp, JDBC userinfo, JDBC userinfo + semicolon password, semicolon-only, empty password). Updated `TestLogConfig_RedactsSensitiveData` to include a JDBC userinfo URL with a password. Added `TestLogConfig_NoDoubleLoggingOnHandshakeFailure` to verify exactly 1 error record per failed connection.
 
 ---
 
