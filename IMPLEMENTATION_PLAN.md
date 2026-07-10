@@ -810,6 +810,12 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Package doc in `doc.go` with a quick-start.
 - **Deliverables:** README, examples, doc.go.
 - **Done when:** `go test` runs examples; docs match implemented behaviour.
+- **Implementation notes:**
+  - README now includes install instructions, config-based usage, `.env` guidance, logging setup, a supported-types table, and a concise limitations section.
+  - `doc.go` now mirrors the quick-start/config/logging guidance so package docs stay aligned with the README.
+  - Added `example_test.go` with runnable, output-free examples that cover opening, querying, executing, transactions, and prepared statements; the examples skip cleanly when H2 credentials/server are unavailable.
+  - Verified locally with `go test ./...`, `go test -race ./...`, `go test -tags integration -race ./...`, and `CGO_ENABLED=0 go build ./...`.
+- **Status:** ✅ Done — 2026-07-10
 
 ### T12.4 v0.1.0 (MVP) tag
 - **Goal:** Cut the first MVP release.
