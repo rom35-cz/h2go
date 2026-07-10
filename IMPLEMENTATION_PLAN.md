@@ -796,6 +796,11 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Verify implementation constraints (§10.5): no PG mode, no JDBC bridge, no CGO (`CGO_ENABLED=0` build), pure Go, no copied Java.
 - **Deliverables:** `docs/ACCEPTANCE.md`, any missing tests.
 - **Done when:** Every §10 criterion has a passing, referenced test.
+- **Implementation notes:**
+  - Added `docs/ACCEPTANCE.md` with a PRD §10 traceability matrix linking each acceptance criterion to the concrete unit/integration test coverage.
+  - Verified the implementation constraints with `CGO_ENABLED=0 go build ./...` plus the existing pure-Go test suite and live H2 integration runs.
+  - No runtime code changes were required for this task; the acceptance work is documentation + verification only.
+- **Status:** ✅ Done — 2026-07-10
 
 ### T12.3 Documentation and examples
 - **Goal:** Usable public docs.
