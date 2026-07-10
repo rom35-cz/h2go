@@ -3,6 +3,7 @@ package h2go
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -29,6 +30,11 @@ type Config struct {
 	// OriginalURL is the exact DSN string supplied to ParseDSN,
 	// preserved for the handshake.
 	OriginalURL string
+
+	// Logger enables optional driver diagnostics when non-nil.
+	// ParseDSN never populates Logger; callers must set it explicitly via
+	// Config / connector APIs (DSN strings cannot carry logger objects).
+	Logger *slog.Logger
 }
 
 // ParseDSN parses an H2 DSN string into a Config.

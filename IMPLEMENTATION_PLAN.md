@@ -753,7 +753,20 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
   - Documented default handler is `slog.NewTextHandler` (text, not JSON).
   - **Redact** passwords and password hashes everywhere; include protocol version + server target in diagnostic records.
 - **Deliverables:** `logging.go`, tests asserting no secret leakage and no logs when disabled.
+- **Implementation notes:**
+  - Added `Config.Logger *slog.Logger` for explicit programmatic diagnostics configuration (not DSN-based).
+  - Added `logging.go` with:
+    - `NewTextLogger(w, opts)` helper backed by `slog.NewTextHandler`.
+    - `logConfig(...)` common diagnostic emitter (silent when logger is nil).
+    - central redaction for sensitive keys (`password*`, `*hash`) and DSN-like payloads (`;PASSWORD=...`, userinfo `user:pass@`, query `?password=...`).
+  - Wired diagnostics into connect/handshake lifecycle (`connector.Connect`, `HandshakeContext`) with structured fields including `target` and `protocol_expected=21`.
+  - Added `logging_test.go` coverage for:
+    - text logger output,
+    - disabled/no-logger silent path,
+    - password/password-hash redaction (including error string sanitization),
+    - protocol/target metadata presence.
 - **Done when:** Enabling a logger emits text records; disabled path is silent; secrets never logged.
+- **Status:** ✅ Done — 2026-07-10
 
 ---
 

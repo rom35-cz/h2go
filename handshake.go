@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -38,13 +39,18 @@ func HandshakeContext(ctx context.Context, cfg *Config) (*Session, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if cfg == nil {
+		return nil, fmt.Errorf("h2go: HandshakeContext: config is nil")
+	}
 	addr := net.JoinHostPort(cfg.Host, cfg.Port)
+	logConfig(cfg, slog.LevelDebug, "handshake dial starting")
 	dialer := net.Dialer{}
 	if deadline, ok := ctx.Deadline(); ok {
 		dialer.Deadline = deadline
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
+		logConfig(cfg, slog.LevelError, "handshake dial failed", slog.Any("error", err))
 		return nil, fmt.Errorf("h2go: dial %s: %w", addr, err)
 	}
 
@@ -52,13 +58,17 @@ func HandshakeContext(ctx context.Context, cfg *Config) (*Session, error) {
 	cleanup := beginOperationContext(ctx, tr, nil)
 	defer cleanup()
 
+	handshakeAutoCommit := false
 	defer func() {
 		if err != nil {
+			logConfig(cfg, slog.LevelError, "handshake failed", slog.Any("error", err))
 			_ = tr.Abort()
 			if ctx.Err() != nil {
 				err = ctx.Err()
 			}
+			return
 		}
+		logConfig(cfg, slog.LevelDebug, "handshake completed", slog.Bool("autocommit", handshakeAutoCommit))
 	}()
 
 	// Step 1: send credentials and requested protocol version.
@@ -147,6 +157,7 @@ func HandshakeContext(ctx context.Context, cfg *Config) (*Session, error) {
 		err = fmt.Errorf("h2go: read autocommit: %w", e)
 		return nil, err
 	}
+	handshakeAutoCommit = autoCommit
 
 	return &Session{
 		tr:         tr,

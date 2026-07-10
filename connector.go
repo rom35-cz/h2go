@@ -3,6 +3,7 @@ package h2go
 import (
 	"context"
 	"database/sql/driver"
+	"log/slog"
 )
 
 // connector implements driver.Connector, providing a way to create
@@ -17,14 +18,21 @@ type connector struct {
 //
 // Connect implements driver.Connector.
 func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
+	if c == nil || c.cfg == nil {
+		return nil, driver.ErrBadConn
+	}
+
 	select {
 	case <-ctx.Done():
+		logConfig(c.cfg, slog.LevelDebug, "connect aborted before handshake", slog.String("reason", ctx.Err().Error()))
 		return nil, ctx.Err()
 	default:
 	}
 
+	logConfig(c.cfg, slog.LevelDebug, "connect starting")
 	sess, err := HandshakeContext(ctx, c.cfg)
 	if err != nil {
+		logConfig(c.cfg, slog.LevelError, "connect failed", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -32,10 +40,12 @@ func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 	select {
 	case <-ctx.Done():
 		_ = sess.Close()
+		logConfig(c.cfg, slog.LevelDebug, "connect cancelled after handshake", slog.String("reason", ctx.Err().Error()))
 		return nil, ctx.Err()
 	default:
 	}
 
+	logConfig(c.cfg, slog.LevelDebug, "connect established")
 	return &conn{
 		sess: sess,
 	}, nil
