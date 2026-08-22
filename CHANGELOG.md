@@ -2,7 +2,7 @@
 
 All notable changes to `h2go` will be documented in this file.
 
-## [Unreleased] (v0.2.0 preview)
+## [v0.2.0] - 2026-08-22
 
 Post-MVP maturity fixes from the `MATURITY_MVP.md` and `MATURITY_ROUND_II.md`
 reviews.
