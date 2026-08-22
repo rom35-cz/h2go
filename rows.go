@@ -342,11 +342,7 @@ func (r *Rows) fetchRows(fetch int) error {
 
 		case -1:
 			// Exception
-			h2Err := readH2Error(r.session.tr)
-			if h2Err == nil {
-				return fmt.Errorf("h2go: fetchRows: expected H2 error but got nil")
-			}
-			return h2Err
+			return readH2Error(r.session.tr)
 
 		default:
 			return fmt.Errorf("h2go: fetchRows: unexpected row flag %d", rowFlag)
