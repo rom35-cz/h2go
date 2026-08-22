@@ -80,6 +80,31 @@ cfg.FetchSize = 50 // prefetch 50 rows per batch
 db, err := h2go.OpenDB(cfg)
 ```
 
+## Generated keys
+
+By default (`GeneratedKeysAuto`) the driver asks H2 for the auto-detected
+generated key of every update statement, so `res.LastInsertId()` works like
+with most drivers.
+
+The `Config.GeneratedKeysMode` family is **connection-level**: the mode (and
+its columns/names) applies to every update statement on every connection
+created from that `Config` — unlike JDBC, where the request is made per
+statement. To mix modes (e.g. one handle requesting keys and another not),
+create separate `*sql.DB` handles from separate configs. Per-statement
+overrides are future work.
+
+Turning keys off requires the escape hatch below — `GeneratedKeysNone` is the
+zero value, so on its own it is indistinguishable from "default" (auto):
+
+```go
+cfg.GeneratedKeysMode = h2go.GeneratedKeysNone
+cfg.GeneratedKeysModeSet = true // required, otherwise keys stay on (auto)
+db, err := h2go.OpenDB(cfg)
+```
+
+For the full multi-column / multi-row key result, see the
+`h2go.GeneratedKeysProvider` notes under [Limitations](#limitations).
+
 ## DSN formats
 
 | Format | Example | Notes |

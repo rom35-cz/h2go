@@ -55,6 +55,13 @@ type Config struct {
 	//   - GeneratedKeysNone (0): no generated keys requested.
 	//   - GeneratedKeysColumnNumbers (2): use GeneratedKeysColumns.
 	//   - GeneratedKeysColumnNames (3): use GeneratedKeysColumnNames.
+	//
+	// Scope: CONNECTION-LEVEL. The mode applies to every update statement
+	// executed on connections created from this Config — unlike JDBC, where
+	// the request is made per statement. To mix modes, create separate
+	// *sql.DB handles from separate Configs. Per-statement overrides are
+	// future work.
+	//
 	// Note: GeneratedKeysNone == 0, which is the zero value; the driver
 	// treats 0 as "default" (auto) unless GeneratedKeysModeSet is true.
 	GeneratedKeysMode int
@@ -62,14 +69,21 @@ type Config struct {
 	// GeneratedKeysModeSet marks that GeneratedKeysMode was explicitly set
 	// by the caller. When false (default), the driver uses GeneratedKeysAuto
 	// regardless of the GeneratedKeysMode field value.
+	//
+	// This escape hatch matters because GeneratedKeysNone == 0: without it,
+	// setting GeneratedKeysMode = GeneratedKeysNone has no effect and keys
+	// keep being requested. The same connection-level scope as
+	// GeneratedKeysMode applies.
 	GeneratedKeysModeSet bool
 
 	// GeneratedKeysColumns holds column indices (1-based) for generated keys
-	// when GeneratedKeysMode is GeneratedKeysColumnNumbers.
+	// when GeneratedKeysMode is GeneratedKeysColumnNumbers. Same
+	// connection-level scope as GeneratedKeysMode.
 	GeneratedKeysColumns []int
 
 	// GeneratedKeysColumnNames holds column names for generated keys when
-	// GeneratedKeysMode is GeneratedKeysColumnNames.
+	// GeneratedKeysMode is GeneratedKeysColumnNames. Same connection-level
+	// scope as GeneratedKeysMode.
 	GeneratedKeysColumnNames []string
 }
 

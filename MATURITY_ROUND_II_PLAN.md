@@ -553,6 +553,23 @@ as an escape hatch, which is easy to forget.
 
 **Done when:** docs consistent with behavior; suite green.
 
+**Status: DONE** (2026-08-22). Implementation notes:
+- `dsn.go`: all four generated-keys Config fields now carry the scope
+  statement — the mode applies to EVERY update on connections created from
+  this Config, JDBC is per-statement, mixing modes means separate `*sql.DB`
+  handles from separate Configs, per-statement overrides are future work.
+- The `GeneratedKeysModeSet` comment spells out why the escape hatch exists:
+  `GeneratedKeysNone == 0`, so without it the "turn keys off" setting is
+  indistinguishable from the unset auto default (the usual reason people file
+  "GeneratedKeysMode = None not working" bugs).
+- README: new "## Generated keys" subsection right after "Result options"
+  covering the same three points with a compilable off-switch snippet and a
+  cross-link to the GeneratedKeysProvider notes under Limitations (Task 3).
+- Docs-only task per plan; behavior untouched. Verified by full suite green
+  incl. `TestIntegration_GeneratedKeys*` against live H2.
+- Validation: build, vet (both tags), gofmt, lint 0 issues (both tags),
+  unit+race, integration+race, CGO-free build — all green.
+
 ---
 
 ## Task 8 — Tighten integration assertions (finding 9)
