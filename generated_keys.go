@@ -56,6 +56,12 @@ func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: failed to read row count: %w", err)
 	}
+	// DoS guard, applied before any further parsing or allocation: rowCount
+	// arrives as an int64 from the wire and must not drive a giant
+	// pre-allocation. Compared as int64 — no int conversion precedes it.
+	if rowCount > maxWireCollectionElements {
+		return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: row count %d exceeds cap %d", rowCount, maxWireCollectionElements)
+	}
 
 	meta, err := s.tr.ReadResultMeta(columnCount, s.version)
 	if err != nil {

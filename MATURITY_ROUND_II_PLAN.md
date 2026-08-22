@@ -354,6 +354,48 @@ decode.
 **Done when:** unit suite green incl. new cap tests; no `make([]T, wireLen)`
 without a guard remains in `value_read.go`/`generated_keys.go` (grep audit).
 
+**Status: DONE** (2026-08-22). Implementation notes:
+- Shared constant `maxWireCollectionElements = 1 << 20` in `value_read.go`,
+  documented with the rule the whole task follows: compare as int64 BEFORE any
+  int conversion so an int64 count can never be truncated into passing.
+- Guards are placed **fail-fast**, before further wire parsing, not just
+  before the allocation:
+  - ARRAY: complement legacy length → cap check → skip type name → zero check
+    (a hostile count is rejected without consuming anything);
+  - ROW: a negative field count is rejected outright (`invalid field count`) —
+    unlike ARRAY, Transfer.readValue never writes negative ROW counts, so this
+    is a broken frame, not a legacy encoding;
+  - generated-keys rowCount: guarded immediately after `ReadRowCount`, before
+    result metadata is even parsed.
+- Finding 17: the legacy ARRAY type-name skip error is now wrapped and
+  returned (`failed to skip legacy type name: ...`) instead of `_, _ =`.
+- Inline BLOB: `length > MaxWireLength` rejected before `make`, mirroring
+  `ReadBytes`' error style.
+- `maxInlineClobChars` re-derived as `MaxWireLength` (each CLOB char occupies
+  at least one payload byte, so larger char counts can never be legitimate;
+  replaces the independent 1<<28 magic number). The upfront
+  `strings.Builder.Grow(int(length))` was removed entirely — Builder grows
+  amortized, so a hostile/truncated frame now allocates almost nothing before
+  failing at stream EOF.
+- Beyond the letter of the plan, `fetchLob`'s response chunk length is now
+  guarded too (`0 < actualLen <= lobReadChunkSize`; the server never sends
+  more than requested): previously a hostile `actualLen` drove
+  `make([]byte, actualLen)` unguarded, and a negative value was silently
+  treated as end-of-data.
+- Grep audit of remaining `make(` sites: all five in-scope allocations are now
+  behind guards. `generated_keys.go:155` (`make([]driver.Value,
+  meta.ColumnCount)`) is bounded by the columnCount that already built the
+  ResultMeta slice — the true intake point is `ReadResultMeta`
+  (`metadata.go`, also unguarded), which is outside this task's declared
+  file scope; flagged for the Task 9 P3 sweep or backlog.
+- Tests (`wire_caps_test.go`, 9 tests): ARRAY count cap incl.
+  legacy-complement path, ROW cap + negative rejection, inline BLOB/CLOB caps
+  just above the limit, generated-keys rowCount cap, fetchLob chunk-range
+  guard over net.Pipe, finding-17 error propagation, and small-collection
+  decode regressions.
+- Validation: build, vet, gofmt, lint 0 issues (default + integration tags),
+  unit+race, integration+race against live H2, CGO-free build — all green.
+
 ---
 
 ## Task 5 — Deterministic session discard on mid-stream decode errors (finding 6)

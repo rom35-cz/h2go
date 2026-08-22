@@ -417,6 +417,14 @@ type lobCollector struct {
 	curCol  int
 }
 
+// maxWireCollectionElements caps the element/row count the driver accepts for
+// collection-style values (ARRAY elements, ROW fields, generated-keys rows)
+// before pre-allocating a slice. It is a DoS guard against a broken or hostile
+// server claiming a giant count — the allocation would happen before any
+// payload byte is read. Compare against it as int64 BEFORE converting wire
+// values to int so an int64 count can never be silently truncated.
+const maxWireCollectionElements = 1 << 20 // 1,048,576 elements/rows
+
 // readArrayValue reads an ARRAY value as a JSON-like string.
 // Each element is decoded recursively using the element type from
 // colType.ExtTypeInfo when available. Elements decode in "nested" mode: a
@@ -429,9 +437,20 @@ func (tr *Tr) readArrayValue(colType *TypeInfo) (driver.Value, error) {
 		return nil, fmt.Errorf("h2go: readArrayValue: failed to read length: %w", err)
 	}
 	if length < 0 {
-		// H2 1.4.200 and older may use negative length with a type name string
+		// H2 1.4.200 and older may use negative length with a type name string.
 		length = ^length
-		_, _ = tr.ReadString() // skip type name
+		// Fail fast on a hostile count before touching the wire again.
+		if int64(length) > maxWireCollectionElements {
+			return nil, fmt.Errorf("h2go: readArrayValue: element count %d exceeds cap %d", length, maxWireCollectionElements)
+		}
+		// Finding 17: this skip-path error must not be discarded. A failure
+		// here leaves the stream misaligned; swallowing it made every later
+		// decode on this connection fail confusingly instead of at the cause.
+		if _, err := tr.ReadString(); err != nil {
+			return nil, fmt.Errorf("h2go: readArrayValue: failed to skip legacy type name: %w", err)
+		}
+	} else if int64(length) > maxWireCollectionElements {
+		return nil, fmt.Errorf("h2go: readArrayValue: element count %d exceeds cap %d", length, maxWireCollectionElements)
 	}
 	if length == 0 {
 		return "[]", nil
@@ -459,6 +478,15 @@ func (tr *Tr) readRowValue(_ *TypeInfo) (driver.Value, error) {
 	length, err := tr.ReadInt32()
 	if err != nil {
 		return nil, fmt.Errorf("h2go: readRowValue: failed to read length: %w", err)
+	}
+	if length < 0 {
+		// Unlike ARRAY, the reference reader never writes a negative ROW field
+		// count (Transfer.readValue would fault on it), so treat it as a broken
+		// frame rather than a legacy encoding.
+		return nil, fmt.Errorf("h2go: readRowValue: invalid field count %d", length)
+	}
+	if int64(length) > maxWireCollectionElements {
+		return nil, fmt.Errorf("h2go: readRowValue: field count %d exceeds cap %d", length, maxWireCollectionElements)
 	}
 	fields := make([]string, 0, length)
 	for i := int32(0); i < length; i++ {
@@ -577,6 +605,9 @@ func (tr *Tr) readLOBValue(typeCode int32, lc *lobCollector) (driver.Value, erro
 
 	// For BLOB: read raw bytes
 	if typeCode == ValueTypeBlob {
+		if length > MaxWireLength {
+			return nil, fmt.Errorf("h2go: readLOBValue: inline BLOB length %d exceeds wire cap %d", length, MaxWireLength)
+		}
 		data := make([]byte, length)
 		if err := tr.ReadFull(data); err != nil {
 			return nil, fmt.Errorf("h2go: readLOBValue: failed to read BLOB data: %w", err)
@@ -658,8 +689,14 @@ func (tr *Tr) fetchLob(p *pendingLob) (driver.Value, error) {
 		if err != nil {
 			return nil, fmt.Errorf("h2go: fetchLob: read actual length: %w", err)
 		}
-		if actualLen <= 0 {
+		if actualLen == 0 {
 			break // end of LOB data
+		}
+		// The server never answers with more bytes than requested (it caps
+		// chunks at lobReadChunkSize); anything else is a broken frame and must
+		// not drive the allocation below.
+		if actualLen < 0 || actualLen > lobReadChunkSize {
+			return nil, fmt.Errorf("h2go: fetchLob: chunk length %d outside expected range", actualLen)
 		}
 
 		chunk := make([]byte, actualLen)
@@ -682,10 +719,11 @@ func (tr *Tr) fetchLob(p *pendingLob) (driver.Value, error) {
 const lobMagic = 0x1234
 
 // maxInlineClobChars caps the character length the driver will accept for an
-// inline CLOB before allocating a decode buffer. It is a DoS guard, not a
-// semantic limit: H2's MAX_LENGTH_INPLACE_LOB is far below this value in any
-// realistic deployment.
-const maxInlineClobChars = 1 << 28 // 268M chars
+// inline CLOB before decoding. Derived from MaxWireLength instead of an
+// independent number: each char occupies at least one payload byte on the
+// wire, so a longer char count can never be backed by a legitimate inline
+// value. It is a DoS guard, not a semantic limit.
+const maxInlineClobChars = MaxWireLength
 
 // readInlineClob reads `length` UTF-8 code points from the stream and verifies
 // the trailing LOB_MAGIC. Encoding matches Data.copyString / DataReader.readChar:
@@ -697,9 +735,10 @@ func (tr *Tr) readInlineClob(length int64) (driver.Value, error) {
 		return nil, fmt.Errorf("h2go: readInlineClob: CLOB char length %d exceeds cap %d", length, maxInlineClobChars)
 	}
 	var sb strings.Builder
-	if length > 0 {
-		sb.Grow(int(length)) // bytes >= chars, so this avoids most reallocations
-	}
+	// No upfront Grow(int(length)): a hostile length must not force one huge
+	// allocation before any payload byte arrives. The Builder grows
+	// amortized, so a truncated frame is rejected by stream EOF having
+	// allocated almost nothing.
 	for i := int64(0); i < length; i++ {
 		c, err := tr.readClobChar()
 		if err != nil {
