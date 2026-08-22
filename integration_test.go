@@ -1543,7 +1543,11 @@ func TestIntegration_TypeShowcaseFullSelect(t *testing.T) {
 }
 
 // TestIntegration_ComplexTypeDecoding verifies that ENUM, INTERVAL, ARRAY,
-// and ROW values decode to the documented Go representations without error.
+// and ROW values decode to their exact documented representations.
+// MATURITY_ROUND_II_PLAN.md Task 8 (finding 9): these are golden-string
+// assertions, not Contains checks — a formatting regression must fail here.
+// The ARRAY NULL-element rendering "<nil>" is pinned by this test (Task 8 owns
+// the behavior contract); Task 9 documents it in the README.
 func TestIntegration_ComplexTypeDecoding(t *testing.T) {
 	env := integrationEnv(t)
 	if env == nil {
@@ -1552,65 +1556,73 @@ func TestIntegration_ComplexTypeDecoding(t *testing.T) {
 	db := integrationDB(t, env)
 	ctx := context.Background()
 
-	// ENUM: scan as int64 ordinal.
-	rows, err := db.QueryContext(ctx, "SELECT CAST('SMALL' AS ENUM('SMALL', 'MEDIUM', 'LARGE'))")
-	if err != nil {
-		t.Fatalf("ENUM query: %v", err)
-	}
-	defer rows.Close()
-	if rows.Next() {
+	t.Run("ENUM ordinal", func(t *testing.T) {
 		var v int64
-		if err := rows.Scan(&v); err != nil {
-			t.Fatalf("ENUM scan: %v", err)
+		err := db.QueryRowContext(ctx,
+			"SELECT CAST('SMALL' AS ENUM('SMALL', 'MEDIUM', 'LARGE'))").Scan(&v)
+		if err != nil {
+			t.Fatalf("ENUM query/scan: %v", err)
 		}
 		if v != 1 {
 			t.Errorf("ENUM: got %d, want 1 (SMALL)", v)
 		}
-	}
+	})
 
-	// INTERVAL: select raw interval value, decoded as string.
-	intervalRow := db.QueryRowContext(ctx, "SELECT INTERVAL '1-2' YEAR TO MONTH")
-	var intervalStr string
-	if err := intervalRow.Scan(&intervalStr); err != nil {
-		t.Fatalf("INTERVAL scan: %v", err)
-	}
-	if !strings.Contains(intervalStr, "1") {
-		t.Errorf("INTERVAL: got %q, expected to contain '1'", intervalStr)
-	}
+	t.Run("INTERVAL canonical text", func(t *testing.T) {
+		// Representative subset covering positive, negative, fractional and
+		// zero-padded forms; the full matrix lives in
+		// TestIntegration_IntervalCanonicalMatrix (Task 2).
+		tests := []struct {
+			expr   string
+			golden string
+		}{
+			{"INTERVAL '1-2' YEAR TO MONTH", "INTERVAL '1-2' YEAR TO MONTH"},
+			{"INTERVAL '1 02:03:04.5' DAY TO SECOND", "INTERVAL '1 02:03:04.5' DAY TO SECOND"},
+			{"INTERVAL '0 00:00:00' DAY TO SECOND", "INTERVAL '0 00:00:00' DAY TO SECOND"},
+			{"-INTERVAL '2:03:04.5' HOUR TO SECOND", "INTERVAL '-2:03:04.5' HOUR TO SECOND"},
+		}
+		for _, tc := range tests {
+			var got string
+			if err := db.QueryRowContext(ctx, "SELECT "+tc.expr).Scan(&got); err != nil {
+				t.Errorf("%s: query/scan: %v", tc.expr, err)
+				continue
+			}
+			if got != tc.golden {
+				t.Errorf("%s: decoded %q, want %q", tc.expr, got, tc.golden)
+			}
+		}
+	})
 
-	// ARRAY: H2 ARRAY value decoded as JSON-like string.
-	rows, err = db.QueryContext(ctx, "SELECT ARRAY[1, 2, 3]")
-	if err != nil {
-		t.Fatalf("ARRAY query: %v", err)
-	}
-	defer rows.Close()
-	if rows.Next() {
+	t.Run("ARRAY exact rendering", func(t *testing.T) {
 		var arr string
-		if err := rows.Scan(&arr); err != nil {
-			t.Fatalf("ARRAY scan: %v", err)
+		err := db.QueryRowContext(ctx, "SELECT ARRAY[1, 2, 3]").Scan(&arr)
+		if err != nil {
+			t.Fatalf("ARRAY query/scan: %v", err)
 		}
-		if !strings.Contains(arr, "1") || !strings.Contains(arr, "3") {
-			t.Errorf("ARRAY: got %q, expected to contain elements", arr)
+		if arr != "[1,2,3]" {
+			t.Errorf("ARRAY: got %q, want [1,2,3]", arr)
 		}
-	}
 
-	// ROW: decoded as parenthesized string.
-	rows, err = db.QueryContext(ctx, "SELECT (1, 'hello')")
-	if err != nil {
-		t.Fatalf("ROW query: %v", err)
-	}
-	defer rows.Close()
-	if rows.Next() {
+		// NULL elements render as <nil>: pinned behavior contract.
+		err = db.QueryRowContext(ctx, "SELECT ARRAY['a', 'b', 'c', NULL]").Scan(&arr)
+		if err != nil {
+			t.Fatalf("ARRAY-with-NULL query/scan: %v", err)
+		}
+		if arr != "[a,b,c,<nil>]" {
+			t.Errorf("ARRAY with NULL: got %q, want [a,b,c,<nil>]", arr)
+		}
+	})
+
+	t.Run("ROW exact rendering", func(t *testing.T) {
 		var r string
-		if err := rows.Scan(&r); err != nil {
-			t.Fatalf("ROW scan: %v", err)
+		err := db.QueryRowContext(ctx, "SELECT (1, 'hello')").Scan(&r)
+		if err != nil {
+			t.Fatalf("ROW query/scan: %v", err)
 		}
-		if !strings.Contains(r, "1") || !strings.Contains(r, "hello") {
-			t.Errorf("ROW: got %q, expected to contain fields", r)
+		if r != "(1,hello)" {
+			t.Errorf("ROW: got %q, want (1,hello)", r)
 		}
-	}
-
-	t.Log("complex type decoding passed")
+	})
 }
 
 // TestIntegration_FetchOnDemandLOB verifies that large BLOB and CLOB values

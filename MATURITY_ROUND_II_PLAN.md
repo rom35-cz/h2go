@@ -599,6 +599,33 @@ ARRAY NULL-element rendering is unpinned.
 **Done when:** full integration suite green with the tightened assertions; the
 Round II failure shapes (see audit) are each covered by a named test.
 
+**Status: DONE** (2026-08-22). Implementation notes:
+- `TestIntegration_ComplexTypeDecoding` restructured into named subtests with
+  exact assertions:
+  - ENUM ordinal stays exact (`v == 1`) — already was;
+  - INTERVAL: four inline goldens (positive, fractional DAY TO SECOND,
+    zero-padded all-zero, negative HOUR TO SECOND) replacing the old
+    `strings.Contains(..., "1")`; the exhaustive matrix remains in
+    `TestIntegration_IntervalCanonicalMatrix` from Task 2;
+  - ARRAY: exact `"[1,2,3]"` plus the pinned NULL-element rendering
+    `"[a,b,c,<nil>]"` — behavior contract owned here per plan; README
+    documentation lands in Task 9;
+  - ROW: exact `"(1,hello)"`.
+  All goldens matched live H2 on the first run — renderer semantics and wire
+  reality agree; also cleaned up the old double `defer rows.Close()` pattern.
+- FetchOnDemandLOB pool-sanity requirement: already satisfied by Task 1's
+  "fetch size one crosses every boundary" subtest (post-streaming COUNT(*)
+  probe on the same handle).
+- GeneratedKeysMultiColumn internal + GeneratedKeysProviderExternal external:
+  both views already covered by Task 3's separate package-external test; no
+  duplication needed.
+- Round II failure shapes coverage check: "status 15" two-LOB-column shape,
+  "16777216" multi-row CLOB shape → TestIntegration_FetchOnDemandLOB subtests;
+  interval formats → IntervalCanonicalMatrix + ComplexTypeDecoding goldens;
+  ARRAY NULL rendering → this task. All named ✓.
+- Validation: build, vet (both tags), gofmt, lint 0 issues (both tags),
+  unit+race, integration+race against live H2, CGO-free build — all green.
+
 ---
 
 ## Task 9 — P3 sweep (findings 10–15, 18; gofmt; dead code)
