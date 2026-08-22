@@ -433,6 +433,27 @@ func TestTypeInfo_PrecisionScale(t *testing.T) {
 		t.Error("Expected ok=false for NUMERIC with unknown precision")
 	}
 
+	// NUMERIC(12) declared without scale: wire sends scale=-1, which must be
+	// reported as unknown (ok=false) rather than falsely claiming scale 0.
+	info = &TypeInfo{ValueType: ValueTypeNumeric, Precision: 12, Scale: -1}
+	prec, scale, ok = info.PrecisionScale()
+	if ok {
+		t.Error("Expected ok=false for scale-less NUMERIC(12)")
+	}
+	if prec != 12 || scale != 0 {
+		t.Errorf("PrecisionScale scale-less NUMERIC: got (%d, %d), want (12, 0)", prec, scale)
+	}
+
+	// NUMERIC(12,4) with explicit scale stays known.
+	info = &TypeInfo{ValueType: ValueTypeNumeric, Precision: 12, Scale: 4}
+	prec, scale, ok = info.PrecisionScale()
+	if !ok {
+		t.Error("Expected ok=true for NUMERIC(12,4)")
+	}
+	if prec != 12 || scale != 4 {
+		t.Errorf("PrecisionScale NUMERIC(12,4): got (%d, %d), want (12, 4)", prec, scale)
+	}
+
 	// DECFLOAT reports precision but no fixed scale.
 	info = &TypeInfo{ValueType: ValueTypeDecfloat, Precision: 34, Scale: -1}
 	prec, scale, ok = info.PrecisionScale()

@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// ErrNotYetSupported is returned for operations that are not yet
-// implemented in the current MVP phase. Users should check the
-// implementation plan for when these features will be available.
-var ErrNotYetSupported = fmt.Errorf("h2go: operation not yet supported")
-
 // conn implements driver.Conn, representing a single connection
 // to an H2 database server.
 //
@@ -177,15 +172,21 @@ func (c *conn) ResetSession(ctx context.Context) error {
 
 	pending, err := c.sess.hasPendingTransaction(ctx)
 	if err != nil {
+		// Transport-level failure: mark the session dead so the conn is
+		// reported ErrBadConn and the pool discards it instead of reusing a
+		// half-broken session.
+		_ = c.sess.Abort()
 		return driver.ErrBadConn
 	}
 	if pending {
 		if err := c.sess.rollbackCurrentTransaction(ctx); err != nil {
+			_ = c.sess.Abort()
 			return driver.ErrBadConn
 		}
 	}
 	if !c.sess.autoCommit {
 		if err := c.sess.setAutoCommit(ctx, true); err != nil {
+			_ = c.sess.Abort()
 			return driver.ErrBadConn
 		}
 	}
@@ -236,7 +237,7 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	}
 	// release happens in rows.Close() via closeCallback
 
-	rows, err := c.sess.ExecuteQueryWithParams(ctx, query, 0, defaultFetchSize, params)
+	rows, err := c.sess.ExecuteQueryWithParams(ctx, query, c.effectiveMaxRows(), c.effectiveFetchSize(), params)
 	if err != nil {
 		c.release()
 		return nil, err
@@ -257,7 +258,7 @@ func (c *conn) queryContextInternal(ctx context.Context, query string) (driver.R
 	// Note: release happens in rows.Close() after the result is consumed,
 	// since the connection must remain busy while rows are being read.
 
-	rows, err := c.sess.ExecuteQuery(ctx, query, 0, defaultFetchSize)
+	rows, err := c.sess.ExecuteQuery(ctx, query, c.effectiveMaxRows(), c.effectiveFetchSize())
 	if err != nil {
 		c.release()
 		return nil, err
@@ -364,6 +365,23 @@ func convertNamedValues(args []driver.NamedValue) ([]driver.Value, error) {
 // defaultFetchSize is the default number of rows to fetch in one batch.
 // This matches H2's default fetch size behavior.
 const defaultFetchSize = 100
+
+// effectiveMaxRows returns the configured server-side row cap (0 = unlimited).
+func (c *conn) effectiveMaxRows() int64 {
+	if c == nil || c.sess == nil || c.sess.cfg == nil || c.sess.cfg.MaxRows < 0 {
+		return 0
+	}
+	return c.sess.cfg.MaxRows
+}
+
+// effectiveFetchSize returns the configured fetch batch size, defaulting to
+// defaultFetchSize when unset or invalid.
+func (c *conn) effectiveFetchSize() int {
+	if c == nil || c.sess == nil || c.sess.cfg == nil || c.sess.cfg.FetchSize <= 0 {
+		return defaultFetchSize
+	}
+	return c.sess.cfg.FetchSize
+}
 
 // Verify interface compliance at compile time.
 var (

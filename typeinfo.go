@@ -459,11 +459,12 @@ func (ti *TypeInfo) PrecisionScale() (precision, scale int64, ok bool) {
 		if ti.Precision < 0 {
 			return 0, 0, false
 		}
-		s := int64(ti.Scale)
-		if s < 0 {
-			s = 0
+		// Scale -1 means no scale was declared (scale-less NUMERIC); report
+		// it as unknown instead of falsely claiming scale 0.
+		if ti.Scale < 0 {
+			return ti.Precision, 0, false
 		}
-		return ti.Precision, s, true
+		return ti.Precision, int64(ti.Scale), true
 	case ValueTypeDecfloat:
 		// DECFLOAT carries precision only (no fixed scale). Scale is -1 after
 		// wire decode because the wire only sends the precision byte.

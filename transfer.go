@@ -14,6 +14,13 @@ import (
 // DefaultBufferSize is the default buffer size for the transfer stream.
 const DefaultBufferSize = 64 * 1024
 
+// MaxWireLength caps the length fields the driver will accept for string and
+// byte payloads before allocating a buffer. It is a DoS guard against a broken
+// or hostile server claiming a giant length, not a semantic limit: H2 caps
+// VARCHAR at 1_000_000_000 characters, and any legitimate MVP payload is far
+// below this bound.
+const MaxWireLength = 512 << 20 // 512 MiB
+
 // Tr is a codec that encodes and decodes H2 wire protocol primitives over a
 // buffered reader/writer pair. It wraps a network connection with buffered I/O
 // for efficient read/write of small values.
@@ -302,6 +309,9 @@ func (t *Tr) ReadString() (*string, error) {
 	if length < 0 {
 		return nil, fmt.Errorf("Tr: negative string length %d", length)
 	}
+	if length > MaxWireLength/2 {
+		return nil, fmt.Errorf("Tr: string length %d exceeds wire cap %d bytes", length, MaxWireLength)
+	}
 
 	// Read all UTF-16 code units in a single call, then decode.
 	raw := make([]byte, int(length)*2)
@@ -343,6 +353,9 @@ func (t *Tr) ReadBytes() ([]byte, error) {
 	}
 	if length < 0 {
 		return nil, fmt.Errorf("Tr: negative bytes length %d", length)
+	}
+	if length > MaxWireLength {
+		return nil, fmt.Errorf("Tr: bytes length %d exceeds wire cap %d", length, MaxWireLength)
 	}
 
 	buf := make([]byte, length)

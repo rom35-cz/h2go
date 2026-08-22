@@ -66,6 +66,20 @@ Notes:
 - passwords and password hashes are redacted
 - no logging occurs unless you provide a logger
 
+## Result options
+
+Two optional `Config` fields tune result-set behavior (both default to current driver behavior when zero):
+
+- `MaxRows` (`int64`): forwarded as the protocol `maxRows`, asking the H2 server to cap each result set. `0` means unlimited, matching the H2 server semantics. This mirrors JDBC `Statement.setMaxRows`.
+- `FetchSize` (`int`): how many rows the driver requests per `RESULT_FETCH_ROWS` batch while streaming. `0` uses the driver default of `100`.
+
+```go
+cfg, _ := h2go.ParseDSN("jdbc:h2:tcp://localhost:9092/mydb")
+cfg.MaxRows = 1000 // server returns at most 1000 rows per query
+cfg.FetchSize = 50 // prefetch 50 rows per batch
+db, err := h2go.OpenDB(cfg)
+```
+
 ## DSN formats
 
 | Format | Example | Notes |
@@ -88,8 +102,9 @@ The driver focuses on the MVP scalar set used by the test suite:
 | `NUMERIC` / `DECIMAL` | `string` | Exact decimal text to avoid precision loss |
 | `UUID` | `string` | Canonical 36-character textual form |
 | `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMP WITH TIME ZONE` | `time.Time` | Includes fractional-second precision |
-| `CHAR`, `VARCHAR`, `CLOB` | `string` | Text values |
-| `BINARY`, `VARBINARY`, `BLOB` | `[]byte` | Raw bytes |
+| `CHAR`, `VARCHAR` | `string` | Text values |
+| `CLOB` | `string` | Inline CLOBs (≤ `MAX_LENGTH_INPLACE_LOB`); fetch-on-demand LOBs return `ErrUnsupportedType` (LOB streaming is post-MVP) |
+| `BINARY`, `VARBINARY`, `BLOB` | `[]byte` | Raw bytes; inline BLOBs only, fetch-on-demand BLOBs return `ErrUnsupportedType` |
 | `NULL` | `nil` | Preserved as database null |
 
 Unsupported H2 types return a clear error or a documented fallback value.
@@ -117,6 +132,18 @@ See `doc.go` for a short package quick start and `example_test.go` for runnable 
 - exec
 - transactions
 - prepared statements
+
+Examples run against the local H2 environment (see above) and create throwaway
+tables named `example_*_<nanotime>`, so you may see those tables appear in the
+seed database while examples run.
+
+Notes on column metadata:
+
+- `Rows.Columns()` returns H2 **column labels** (the wire `alias` field), which
+  match JDBC `getColumnLabel`: identical to the column name for plain columns,
+  but the label for expression columns (`SELECT col AS x`, `SELECT 1+1`).
+- `ResultMeta.GetColumnByName` matches those labels only; looking up an
+  expression column by its underlying column name will not match.
 
 ## Repository
 

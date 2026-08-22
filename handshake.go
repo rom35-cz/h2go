@@ -35,7 +35,7 @@ func Handshake(cfg *Config) (*Session, error) {
 // HandshakeContext is the context-aware form of Handshake. It applies any
 // caller deadline to the underlying TCP socket and aborts the connection on
 // cancellation so the caller never gets a half-open session.
-func HandshakeContext(ctx context.Context, cfg *Config) (*Session, error) {
+func HandshakeContext(ctx context.Context, cfg *Config) (sess *Session, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

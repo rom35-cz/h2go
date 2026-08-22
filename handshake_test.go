@@ -2,10 +2,12 @@ package h2go
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mockServer starts a TCP listener on a random local port, runs serverFn in a
@@ -322,6 +324,83 @@ func TestHandshake_CorrectUserNameUppercasingOnWire(t *testing.T) {
 		t.Fatalf("handshake failed: %v", err)
 	}
 	defer sess.Close()
+}
+
+// TestHandshakeContext_CancelMidHandshake verifies that when the context
+// deadline fires while the server stalls (never answers the final STATUS_OK),
+// HandshakeContext returns context.DeadlineExceeded and the socket is torn
+// down (no half-open session leak).
+func TestHandshakeContext_CancelMidHandshake(t *testing.T) {
+	serverDone := make(chan struct{})
+	addr := mockServer(t, func(serverConn net.Conn) {
+		defer close(serverDone)
+		tr := NewReadWriter(serverConn)
+		// Read the credential frame.
+		tr.ReadInt32()
+		tr.ReadInt32()
+		tr.ReadString()
+		tr.ReadString()
+		tr.ReadString()
+		tr.ReadBytes()
+		tr.ReadBytes()
+		tr.ReadInt32()
+
+		// Answer the version negotiation but then stall: never reply to the
+		// SESSION_SET_ID status, so the client blocks on ReadInt32 until the
+		// context deadline fires.
+		tr.WriteInt32(StatusOK)
+		tr.WriteInt32(TCPProtocolVersion21)
+		tr.Flush()
+
+		// Read SESSION_SET_ID request (best-effort), then block until the
+		// client aborts the socket (read returns error on close).
+		tr.ReadInt32()
+		tr.ReadString()
+		tr.ReadString()
+		buf := make([]byte, 1)
+		_, _ = serverConn.Read(buf) // unblocks when client closes
+	})
+
+	host, port := parseAddr(t, addr)
+	cfg := &Config{
+		Host:     host,
+		Port:     port,
+		Database: "testdb",
+		User:     "SA",
+		Password: "",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	sess, err := HandshakeContext(ctx, cfg)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		if sess != nil {
+			_ = sess.Abort()
+		}
+		t.Fatal("expected deadline error, got successful handshake")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+	if sess != nil {
+		t.Errorf("expected nil session on cancellation, got %+v", sess)
+	}
+	// Generous upper bound: the deadline watcher should fire promptly.
+	if elapsed > 2*time.Second {
+		t.Errorf("handshake took %v, expected abort near the 50ms deadline", elapsed)
+	}
+
+	// Wait for the mock server to observe the client closing the socket,
+	// proving no half-open connection leaks.
+	select {
+	case <-serverDone:
+	case <-time.After(2 * time.Second):
+		t.Error("server did not observe client socket close within 2s")
+	}
 }
 
 func TestGenerateSessionID(t *testing.T) {

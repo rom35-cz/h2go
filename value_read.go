@@ -7,6 +7,7 @@ package h2go
 import (
 	"database/sql/driver"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -268,16 +269,80 @@ func (tr *Tr) readLOBValue(typeCode int32) (driver.Value, error) {
 		return data, nil
 	}
 
-	// For CLOB: read characters
-	// CLOB data is read as UTF-8 via DataReader
-	// For simplicity in MVP, we read as a potentially large string
-	// Note: This may need adjustment based on actual wire format testing
-	return nil, fmt.Errorf("h2go: readLOBValue: %w: inline CLOB", ErrUnsupportedType)
+	// For CLOB: read `length` UTF-8 code points as written by Data.copyString.
+	if typeCode == ValueTypeClob {
+		return tr.readInlineClob(length)
+	}
+
+	return nil, fmt.Errorf("h2go: readLOBValue: %w: type code %d", ErrUnsupportedType, typeCode)
 }
 
 // lobMagic is the magic number written by H2 after inline LOB data.
 // Reference: Transfer.LOB_MAGIC = 0x1234 in H2 2.4.240.
 const lobMagic = 0x1234
+
+// maxInlineClobChars caps the character length the driver will accept for an
+// inline CLOB before allocating a decode buffer. It is a DoS guard, not a
+// semantic limit: H2's MAX_LENGTH_INPLACE_LOB is far below this value in any
+// realistic deployment.
+const maxInlineClobChars = 1 << 28 // 268M chars
+
+// readInlineClob reads `length` UTF-8 code points from the stream and verifies
+// the trailing LOB_MAGIC. Encoding matches Data.copyString / DataReader.readChar:
+// 1-byte for <0x80, 2-byte for 0x80..0x7FF (first byte 0xC0|..), 3-byte for
+// >=0x800 (first byte 0xE0|..). Note H2 writes chars (UTF-16 code units), so
+// supplementary characters arrive as a surrogate pair of 3-byte sequences.
+func (tr *Tr) readInlineClob(length int64) (driver.Value, error) {
+	if length > maxInlineClobChars {
+		return nil, fmt.Errorf("h2go: readInlineClob: CLOB char length %d exceeds cap %d", length, maxInlineClobChars)
+	}
+	var sb strings.Builder
+	if length > 0 {
+		sb.Grow(int(length)) // bytes >= chars, so this avoids most reallocations
+	}
+	for i := int64(0); i < length; i++ {
+		c, err := tr.readClobChar()
+		if err != nil {
+			return nil, fmt.Errorf("h2go: readInlineClob: failed to read char %d of %d: %w", i, length, err)
+		}
+		sb.WriteRune(c)
+	}
+	magic, err := tr.ReadInt32()
+	if err != nil {
+		return nil, fmt.Errorf("h2go: readInlineClob: failed to read CLOB magic: %w", err)
+	}
+	if magic != lobMagic {
+		return nil, fmt.Errorf("h2go: readInlineClob: invalid CLOB magic %d", magic)
+	}
+	return sb.String(), nil
+}
+
+// readClobChar reads one character using the DataReader.readChar encoding.
+func (tr *Tr) readClobChar() (rune, error) {
+	x, err := tr.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	if x < 0x80 {
+		return rune(x), nil
+	}
+	if x >= 0xe0 {
+		b1, err := tr.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		b2, err := tr.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		return rune(int(x&0x0f)<<12 | int(b1&0x3f)<<6 | int(b2&0x3f)), nil
+	}
+	b1, err := tr.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	return rune(int(x&0x1f)<<6 | int(b1&0x3f)), nil
+}
 
 // readDateValue reads a DATE value.
 // H2 stores dates as a "dateValue" (days since 1970-01-01, proleptic Gregorian).

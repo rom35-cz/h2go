@@ -33,6 +33,11 @@ type Session struct {
 	nextID     int32       // incremented for each command ID
 }
 
+// closeStatusTimeout bounds how long Close waits for the server's STATUS_OK
+// reply after sending SESSION_CLOSE. A half-open or dead peer cannot stall
+// pool teardown beyond this deadline.
+const closeStatusTimeout = 2 * time.Second
+
 // Close sends a graceful SESSION_CLOSE notification to the server and closes
 // the underlying TCP connection.
 //
@@ -42,8 +47,9 @@ type Session struct {
 // session termination.
 //
 // All intermediate errors (write, flush, read) are best-effort: they are
-// discarded so that a broken-connection close still completes. Future phases
-// may add a configurable deadline on the STATUS_OK read.
+// discarded so that a broken-connection close still completes. The STATUS_OK
+// read is bounded by closeStatusTimeout so a dead or half-open peer cannot
+// stall the close indefinitely.
 func (s *Session) Close() error {
 	if s.tr == nil {
 		s.dead.Store(true)
@@ -53,11 +59,14 @@ func (s *Session) Close() error {
 	s.tr = nil // prevent double-close
 	s.dead.Store(true)
 
-	// Notify the server and drain its STATUS_OK reply. Errors are discarded:
-	// the transport must be closed regardless of the session state.
+	// Notify the server and drain its STATUS_OK reply under a short deadline.
+	// Errors are discarded: the transport must be closed regardless of the
+	// session state.
+	_ = tr.SetDeadline(time.Now().Add(closeStatusTimeout))
 	_ = tr.WriteInt32(SessionClose)
 	_ = tr.Flush()
 	_, _ = tr.ReadInt32() // STATUS_OK; ignore value and error
+	_ = tr.SetDeadline(time.Time{})
 
 	return tr.Close()
 }

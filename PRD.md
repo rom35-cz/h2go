@@ -453,6 +453,8 @@ The first production target must support these common H2 types. All result value
 | `TIMESTAMP WITH TIME ZONE` | `time.Time` |
 | `NUMERIC` | `string` preserving H2 `BigDecimal.toPlainString()` exact value |
 | `UUID` | canonical UUID `string`; interoperability tested with `github.com/google/uuid` |
+| `CLOB` | `string` for inline CLOBs (≤ server `MAX_LENGTH_INPLACE_LOB`); fetch-on-demand LOBs return `ErrUnsupportedType` |
+| `BLOB` | `[]byte` for inline BLOBs; fetch-on-demand LOBs return `ErrUnsupportedType` |
 
 #### Advanced type support
 
@@ -464,8 +466,6 @@ The driver should handle these types in later iterations or via documented fallb
 - `INTERVAL`
 - `ARRAY`
 - `ROW`
-- `BLOB`
-- `CLOB`
 - `JAVA_OBJECT`
 - `GEOMETRY`
 

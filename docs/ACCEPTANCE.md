@@ -19,8 +19,8 @@ This document maps PRD §10 acceptance criteria to the implemented test coverage
 | 10.2 | Driver supports connection pooling without leaking open transactions or remote objects | `TestIntegration_ResetSessionRollsBackPendingTransaction`, `TestIntegration_ValidatorReportsLiveSession`, `TestIntegration_ConnectionPoolStress` |
 | 10.3 | Can create a table | `TestIntegration_ExecContext`, `TestIntegration_ExecContextWithParams` |
 | 10.3 | Can insert rows with parameters | `TestIntegration_ExecContextWithParams`, `TestIntegration_PreparedStatements` |
-| 10.3 | Can query rows | `TestIntegration_QueryContext`, `TestIntegration_QuerySelect`, `TestIntegration_QueryLargeResult`, `TestIntegration_QueryContextWithParams`, `TestIntegration_PreparedStatements` |
-| 10.3 | Can scan common scalar values | `TestIntegration_ScalarTypeDecoding`, `TestIntegration_ScalarRoundTripTable`, `TestIntegration_NullDecoding` |
+| 10.3 | Can query rows | `TestIntegration_QueryContext`, `TestIntegration_QuerySelect`, `TestIntegration_QueryLargeResult`, `TestIntegration_QueryContextWithParams`, `TestIntegration_PreparedStatements`, `TestIntegration_MaxRows` |
+| 10.3 | Can scan common scalar values | `TestIntegration_ScalarTypeDecoding`, `TestIntegration_ScalarRoundTripTable`, `TestIntegration_NullDecoding`, `TestIntegration_TypeShowcaseFullSelect` |
 | 10.3 | Can update rows and return rows affected | `TestIntegration_ExecContext`, `TestIntegration_ExecContextWithParams` |
 | 10.3 | Can delete rows and return rows affected | `TestIntegration_ExecContext`, `TestIntegration_ExecContextWithParams` |
 | 10.3 | Can commit a transaction | `TestIntegration_TransactionCommit` |

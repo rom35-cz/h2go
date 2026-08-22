@@ -397,6 +397,38 @@ func TestTr_Bytes_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestTr_String_CapExceeded verifies that a length field beyond the wire cap
+// is rejected before any large allocation happens.
+func TestTr_String_CapExceeded(t *testing.T) {
+	buf := new(bytes.Buffer)
+	writeInt32(buf, MaxWireLength/2+1) // chars; payload would be 2x this in bytes
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	s, err := tr.ReadString()
+	if err == nil {
+		t.Fatalf("expected cap error, got string of len %d", len(*s))
+	}
+	if s != nil {
+		t.Errorf("expected nil string, got len %d", len(*s))
+	}
+}
+
+// TestTr_Bytes_CapExceeded verifies that a bytes length beyond the wire cap
+// is rejected before any large allocation happens.
+func TestTr_Bytes_CapExceeded(t *testing.T) {
+	buf := new(bytes.Buffer)
+	writeInt32(buf, MaxWireLength+1)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	b, err := tr.ReadBytes()
+	if err == nil {
+		t.Fatalf("expected cap error, got %d bytes", len(b))
+	}
+	if b != nil {
+		t.Errorf("expected nil bytes, got len %d", len(b))
+	}
+}
+
 // ---- RowCount ----
 
 func TestTr_RowCount(t *testing.T) {

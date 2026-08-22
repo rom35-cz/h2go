@@ -897,6 +897,83 @@ func TestIntegration_QueryLargeResult(t *testing.T) {
 	t.Logf("large result: %d rows fetched in batches", count)
 }
 
+// TestIntegration_MaxRows verifies that Config.MaxRows is forwarded to the
+// server as the protocol maxRows, bounding the server-side result set, and
+// that Config.FetchSize controls the prefetch batch size.
+func TestIntegration_MaxRows(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+
+	newDB := func(t *testing.T, maxRows int64, fetchSize int) *sql.DB {
+		t.Helper()
+		cfg, err := ParseDSN(env["JDBC_URL"])
+		if err != nil {
+			t.Fatalf("ParseDSN: %v", err)
+		}
+		MergeCredentials(cfg, env["JDBC_USER"], env["JDBC_PASSWORD"])
+		cfg.MaxRows = maxRows
+		cfg.FetchSize = fetchSize
+		db, err := OpenDB(cfg)
+		if err != nil {
+			t.Fatalf("OpenDB: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		return db
+	}
+
+	count := func(t *testing.T, db *sql.DB, query string, args ...any) int {
+		t.Helper()
+		rows, err := db.QueryContext(context.Background(), query, args...)
+		if err != nil {
+			t.Fatalf("QueryContext %q: %v", query, err)
+		}
+		defer rows.Close()
+		n := 0
+		for rows.Next() {
+			var x int64
+			if err := rows.Scan(&x); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			n++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		return n
+	}
+
+	// MaxRows=3 bounds the server-side result for an inline query.
+	db := newDB(t, 3, 0)
+	if got := count(t, db, "SELECT x FROM SYSTEM_RANGE(1, 10)"); got != 3 {
+		t.Errorf("inline query with MaxRows=3: got %d rows, want 3", got)
+	}
+
+	// MaxRows=3 also bounds prepared statement queries.
+	if got := count(t, db, "SELECT x FROM SYSTEM_RANGE(1, ?)", 10); got != 3 {
+		t.Errorf("prepared query with MaxRows=3: got %d rows, want 3", got)
+	}
+
+	// MaxRows=0 keeps the default unlimited behavior.
+	db = newDB(t, 0, 0)
+	if got := count(t, db, "SELECT x FROM SYSTEM_RANGE(1, 10)"); got != 10 {
+		t.Errorf("unlimited query: got %d rows, want 10", got)
+	}
+
+	// FetchSize larger than the row count still returns all rows (single batch).
+	db = newDB(t, 0, 500)
+	if got := count(t, db, "SELECT x FROM SYSTEM_RANGE(1, 10)"); got != 10 {
+		t.Errorf("FetchSize=500: got %d rows, want 10", got)
+	}
+
+	// FetchSize=2 forces multiple fetch batches across a larger range.
+	db = newDB(t, 0, 2)
+	if got := count(t, db, "SELECT x FROM SYSTEM_RANGE(1, 7)"); got != 7 {
+		t.Errorf("FetchSize=2: got %d rows, want 7", got)
+	}
+}
+
 // TestIntegration_ScalarTypeDecoding exercises the MVP scalar decode paths
 // end-to-end against a live server. This directly validates the Phase 5
 // review fixes for DATE (Bug A), TIMESTAMP WITH TIME ZONE (Bug B), and the
@@ -1101,6 +1178,213 @@ func TestIntegration_ScalarRoundTripTable(t *testing.T) {
 			tc.scan(t, row)
 		})
 	}
+}
+
+// TestIntegration_TypeShowcaseFullSelect selects every column of the seeded
+// type_showcase table and asserts the documented Go representation for each
+// MVP-supported type. It is the single widest regression test for the
+// supported-type matrix.
+//
+// Columns covered (per seed.sql): TINYINT, SMALLINT, INTEGER, BIGINT, REAL,
+// DOUBLE, DECIMAL, DECFLOAT, BOOLEAN, VARCHAR, CHAR, VARCHAR_IGNORECASE,
+// BINARY, VARBINARY, CLOB, BLOB, DATE, TIME, TIME WITH TIME ZONE, TIMESTAMP,
+// TIMESTAMP WITH TIME ZONE, UUID. JSON is intentionally not in the SELECT *
+// (it is decoded as ErrUnsupportedType today) and is probed separately below.
+func TestIntegration_TypeShowcaseFullSelect(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	const query = `SELECT
+		id, col_tinyint, col_smallint, col_integer, col_bigint,
+		col_real, col_double, col_decimal, col_decfloat,
+		col_boolean_t, col_boolean_f,
+		col_varchar, col_char, col_varchar_ic,
+		col_binary, col_varbinary,
+		col_clob, col_blob,
+		col_date, col_time, col_time_tz, col_timestamp, col_timestamp_tz,
+		col_uuid, col_null_int
+	FROM type_showcase WHERE id IN (1,2,3) ORDER BY id`
+
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		t.Fatalf("QueryContext failed: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		id                    int64
+		tiny, small, i, big   sql.NullInt64
+		real, double          sql.NullFloat64
+		decimal, decfloat     sql.NullString
+		boolT, boolF          sql.NullBool
+		varchar, char, charIC sql.NullString
+		binary, varbinary     []byte
+		clob                  sql.NullString
+		blob                  []byte
+		date, timeV           sql.NullTime
+		timeTZ, ts, tsTZ      sql.NullTime
+		uuid                  sql.NullString
+		nullInt               sql.NullInt64
+	}
+	scanRow := func(rows *sql.Rows) *row {
+		t.Helper()
+		r := &row{}
+		err := rows.Scan(&r.id, &r.tiny, &r.small, &r.i, &r.big,
+			&r.real, &r.double, &r.decimal, &r.decfloat,
+			&r.boolT, &r.boolF,
+			&r.varchar, &r.char, &r.charIC,
+			&r.binary, &r.varbinary,
+			&r.clob, &r.blob,
+			&r.date, &r.timeV, &r.timeTZ, &r.ts, &r.tsTZ,
+			&r.uuid, &r.nullInt)
+		if err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		return r
+	}
+
+	// Row 1: typical / maximum values
+	if !rows.Next() {
+		t.Fatal("expected row 1")
+	}
+	r1 := scanRow(rows)
+	if r1.id != 1 {
+		t.Fatalf("row 1: id got %d", r1.id)
+	}
+	if r1.tiny.Int64 != 127 || r1.small.Int64 != 32767 ||
+		r1.i.Int64 != 2147483647 || r1.big.Int64 != 9223372036854775807 {
+		t.Errorf("row 1 integers: %d/%d/%d/%d", r1.tiny.Int64, r1.small.Int64, r1.i.Int64, r1.big.Int64)
+	}
+	if r1.real.Float64 < 3.13 || r1.real.Float64 > 3.15 {
+		t.Errorf("row 1 REAL: got %v, want ~3.14", r1.real.Float64)
+	}
+	if r1.double.Float64 != 2.718281828459045 {
+		t.Errorf("row 1 DOUBLE: got %v", r1.double.Float64)
+	}
+	if r1.decimal.String != "12345.67890" {
+		t.Errorf("row 1 DECIMAL: got %q", r1.decimal.String)
+	}
+	// DECFLOAT decodes as string; exact rendering is H2's toString form.
+	if !r1.decfloat.Valid || !strings.HasPrefix(r1.decfloat.String, "3.14159265358979") {
+		t.Errorf("row 1 DECFLOAT: got %q (valid=%v)", r1.decfloat.String, r1.decfloat.Valid)
+	}
+	if !r1.boolT.Bool || r1.boolF.Bool {
+		t.Errorf("row 1 BOOLEAN: t=%v f=%v", r1.boolT.Bool, r1.boolF.Bool)
+	}
+	if r1.varchar.String != "hello, world" {
+		t.Errorf("row 1 VARCHAR: got %q", r1.varchar.String)
+	}
+	if r1.char.String != "CHAR      " {
+		t.Errorf("row 1 CHAR: got %q (want 10-char padded)", r1.char.String)
+	}
+	if r1.charIC.String != "Mixed CASE value" {
+		t.Errorf("row 1 VARCHAR_IGNORECASE: got %q", r1.charIC.String)
+	}
+	if fmt.Sprintf("%X", r1.binary) != "DEADBEEF" {
+		t.Errorf("row 1 BINARY: got %X", r1.binary)
+	}
+	if fmt.Sprintf("%X", r1.varbinary) != "CAFEBABE01020304" {
+		t.Errorf("row 1 VARBINARY: got %X", r1.varbinary)
+	}
+	// Inline CLOB regression (MATURITY_MVP finding 1): must decode as string.
+	if !r1.clob.Valid || r1.clob.String != "large clob content for testing" {
+		t.Errorf("row 1 CLOB: got %q (valid=%v)", r1.clob.String, r1.clob.Valid)
+	}
+	if fmt.Sprintf("%X", r1.blob) != "0102030405060708" {
+		t.Errorf("row 1 BLOB: got %X", r1.blob)
+	}
+	if r1.date.Time.Year() != 2024 || r1.date.Time.Month() != 1 || r1.date.Time.Day() != 15 {
+		t.Errorf("row 1 DATE: got %v", r1.date.Time)
+	}
+	if r1.timeV.Time.Hour() != 13 || r1.timeV.Time.Minute() != 45 {
+		t.Errorf("row 1 TIME: got %v", r1.timeV.Time)
+	}
+	if _, off := r1.timeTZ.Time.Zone(); off != 2*3600 {
+		t.Errorf("row 1 TIME_TZ offset: got %d, want 7200", off)
+	}
+	if r1.ts.Time.Hour() != 13 || r1.ts.Time.Minute() != 45 {
+		t.Errorf("row 1 TIMESTAMP: got %v", r1.ts.Time)
+	}
+	if _, off := r1.tsTZ.Time.Zone(); off != 2*3600 {
+		t.Errorf("row 1 TIMESTAMP_TZ offset: got %d, want 7200", off)
+	}
+	if r1.uuid.String != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("row 1 UUID: got %q", r1.uuid.String)
+	}
+	if r1.nullInt.Valid {
+		t.Errorf("row 1 col_null_int: expected NULL, got %d", r1.nullInt.Int64)
+	}
+
+	// Row 2: minimum / edge / zero values
+	if !rows.Next() {
+		t.Fatal("expected row 2")
+	}
+	r2 := scanRow(rows)
+	if r2.id != 2 {
+		t.Fatalf("row 2: id got %d", r2.id)
+	}
+	if r2.tiny.Int64 != -128 || r2.small.Int64 != -32768 ||
+		r2.i.Int64 != -2147483648 || r2.big.Int64 != -9223372036854775807 {
+		t.Errorf("row 2 integers: %d/%d/%d/%d", r2.tiny.Int64, r2.small.Int64, r2.i.Int64, r2.big.Int64)
+	}
+	// Empty CLOB must decode as empty string (valid), not NULL.
+	if !r2.clob.Valid || r2.clob.String != "" {
+		t.Errorf("row 2 CLOB: got %q (valid=%v), want empty string", r2.clob.String, r2.clob.Valid)
+	}
+	if !bytes.Equal(r2.blob, []byte{0x00}) {
+		t.Errorf("row 2 BLOB: got %X, want 00", r2.blob)
+	}
+	if !bytes.Equal(r2.binary, []byte{0, 0, 0, 0}) {
+		t.Errorf("row 2 BINARY: got %X, want 00000000", r2.binary)
+	}
+	if r2.varchar.Valid && r2.varchar.String != "" {
+		t.Errorf("row 2 VARCHAR: got %q, want empty", r2.varchar.String)
+	}
+	if r2.uuid.String != "00000000-0000-0000-0000-000000000000" {
+		t.Errorf("row 2 UUID: got %q", r2.uuid.String)
+	}
+
+	// Row 3: every nullable column is NULL
+	if !rows.Next() {
+		t.Fatal("expected row 3")
+	}
+	r3 := scanRow(rows)
+	if r3.id != 3 {
+		t.Fatalf("row 3: id got %d", r3.id)
+	}
+	if r3.tiny.Valid || r3.small.Valid || r3.i.Valid || r3.big.Valid ||
+		r3.real.Valid || r3.double.Valid || r3.decimal.Valid || r3.decfloat.Valid ||
+		r3.boolT.Valid || r3.boolF.Valid ||
+		r3.varchar.Valid || r3.char.Valid || r3.charIC.Valid ||
+		r3.binary != nil || r3.varbinary != nil ||
+		r3.clob.Valid || r3.blob != nil ||
+		r3.date.Valid || r3.timeV.Valid || r3.timeTZ.Valid || r3.ts.Valid || r3.tsTZ.Valid ||
+		r3.uuid.Valid || r3.nullInt.Valid {
+		t.Errorf("row 3: expected all NULL, got %+v", r3)
+	}
+
+	if rows.Next() {
+		t.Fatal("unexpected 4th row")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows error: %v", err)
+	}
+
+	// JSON is intentionally unsupported by ReadValue today; assert the error
+	// surfaces cleanly without corrupting the rest of the stream.
+	var j any
+	err = db.QueryRowContext(ctx, "SELECT col_json FROM type_showcase WHERE id = 1").Scan(&j)
+	if err == nil {
+		t.Errorf("JSON column: expected ErrUnsupportedType, got value %v", j)
+	} else if !errors.Is(err, ErrUnsupportedType) {
+		t.Errorf("JSON column: expected ErrUnsupportedType, got %v", err)
+	}
+
+	t.Log("type_showcase full-select matrix passed")
 }
 
 // TestIntegration_NullDecoding verifies NULL values decode to nil across types.

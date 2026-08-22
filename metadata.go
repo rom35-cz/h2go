@@ -137,8 +137,11 @@ func (tr *Tr) ReadResultMeta(columnCount int32, version int32) (*ResultMeta, err
 	return meta, nil
 }
 
-// ColumnNames returns the column aliases as a slice of strings.
-// This is used for driver.Rows.Columns() implementation.
+// ColumnNames returns the column labels as a slice of strings. H2 sends the
+// ResultColumn "alias" field, which is the display label JDBC reports via
+// getColumnLabel: identical to the column name for plain columns, but the
+// expression text or explicit AS-label for expression columns. This is used
+// for driver.Rows.Columns() implementation.
 func (m *ResultMeta) ColumnNames() []string {
 	names := make([]string, len(m.Columns))
 	for i, col := range m.Columns {
@@ -157,7 +160,9 @@ func (m *ResultMeta) GetColumn(index int) *ResultColumn {
 }
 
 // GetColumnByName returns the metadata for a specific column by alias name.
-// Returns nil if no column with that alias exists.
+// It matches the column label (alias) only: for expression columns such as
+// `SELECT 1+1` or `SELECT col AS x`, lookups by the underlying column name
+// will not match. Returns nil if no column with that alias exists.
 func (m *ResultMeta) GetColumnByName(name string) *ResultColumn {
 	for i := range m.Columns {
 		if m.Columns[i].Alias == name {

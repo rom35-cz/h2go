@@ -212,6 +212,69 @@ func TestNewConnectorCfgIsolated(t *testing.T) {
 	}
 }
 
+// TestNewConnectorCapturesResultOptions verifies that Config.MaxRows and
+// Config.FetchSize are captured by the connector without mutating the
+// caller's Config.
+func TestNewConnectorCapturesResultOptions(t *testing.T) {
+	cfg := &Config{
+		Host:      "localhost",
+		Port:      "9092",
+		Database:  "test",
+		MaxRows:   25,
+		FetchSize: 7,
+	}
+
+	connr, err := NewConnector(cfg)
+	if err != nil {
+		t.Fatalf("NewConnector error: %v", err)
+	}
+	c, ok := connr.(*connector)
+	if !ok {
+		t.Fatal("expected *connector")
+	}
+	if c.cfg.MaxRows != 25 {
+		t.Errorf("connector cfg.MaxRows = %d, want 25", c.cfg.MaxRows)
+	}
+	if c.cfg.FetchSize != 7 {
+		t.Errorf("connector cfg.FetchSize = %d, want 7", c.cfg.FetchSize)
+	}
+
+	// Mutating the caller's struct after creation must not leak in.
+	cfg.MaxRows = 999
+	cfg.FetchSize = 999
+	if c.cfg.MaxRows != 25 || c.cfg.FetchSize != 7 {
+		t.Errorf("connector result options not isolated: MaxRows=%d FetchSize=%d",
+			c.cfg.MaxRows, c.cfg.FetchSize)
+	}
+}
+
+// TestConnEffectiveResultOptions verifies effectiveMaxRows/effectiveFetchSize
+// apply defaults and pass through configured values.
+func TestConnEffectiveResultOptions(t *testing.T) {
+	tests := []struct {
+		name          string
+		cfg           *Config
+		wantMaxRows   int64
+		wantFetchSize int
+	}{
+		{"nil cfg", nil, 0, defaultFetchSize},
+		{"zero values", &Config{}, 0, defaultFetchSize},
+		{"negative treated as default", &Config{MaxRows: -5, FetchSize: -1}, 0, defaultFetchSize},
+		{"configured", &Config{MaxRows: 42, FetchSize: 9}, 42, 9},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &conn{sess: &Session{cfg: tc.cfg}}
+			if got := c.effectiveMaxRows(); got != tc.wantMaxRows {
+				t.Errorf("effectiveMaxRows = %d, want %d", got, tc.wantMaxRows)
+			}
+			if got := c.effectiveFetchSize(); got != tc.wantFetchSize {
+				t.Errorf("effectiveFetchSize = %d, want %d", got, tc.wantFetchSize)
+			}
+		})
+	}
+}
+
 // TestDriverContextCancellation verifies that Connect respects context
 // cancellation when checked before the handshake starts.
 func TestDriverContextCancellation(t *testing.T) {

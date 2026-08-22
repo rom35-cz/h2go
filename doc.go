@@ -48,6 +48,13 @@
 // The default TCP port is 9092 if omitted. Diagnostic logging is optional and
 // disabled unless a logger is explicitly provided in Config.Logger.
 //
+// # Result options
+//
+// Config.MaxRows bounds the server-side size of each result set (forwarded as
+// the protocol maxRows; 0 means unlimited). Config.FetchSize controls how many
+// rows are prefetched per batch while streaming results (0 means the driver
+// default of 100).
+//
 // # Status
 //
 // This package is under development. Not yet ready for production use.

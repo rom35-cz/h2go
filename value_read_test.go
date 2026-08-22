@@ -616,6 +616,202 @@ func TestReadValue_TimestampTZ_NegativeYear(t *testing.T) {
 	_ = offsetSec // suppress unused warning
 }
 
+// writeClobPayload encodes s the way Data.copyString writes an inline CLOB:
+// char length (int64), then per-char UTF-8-ish encoding (1/2/3 bytes), then
+// the LOB magic. H2 writes Java chars (UTF-16 code units), so characters
+// outside the BMP would be written as a surrogate pair; tests here stay in BMP.
+func writeClobPayload(buf *bytes.Buffer, s string) {
+	runes := []rune(s)
+	writeInt64(buf, int64(len(runes)))
+	for _, r := range runes {
+		switch {
+		case r < 0x80:
+			buf.WriteByte(byte(r))
+		case r < 0x800:
+			buf.WriteByte(byte(0xc0 | (r >> 6)))
+			buf.WriteByte(byte(0x80 | (r & 0x3f)))
+		default:
+			buf.WriteByte(byte(0xe0 | (r >> 12)))
+			buf.WriteByte(byte(0x80 | ((r >> 6) & 0x3f)))
+			buf.WriteByte(byte(0x80 | (r & 0x3f)))
+		}
+	}
+	writeInt32(buf, lobMagic)
+}
+
+// TestReadValue_InlineClob tests decoding of inline CLOB values.
+func TestReadValue_InlineClob(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"ascii", "hello world"},
+		{"utf8", "héllo ☺"},
+		{"empty", ""},
+		{"three byte", "日本語テキスト"},
+		{"mixed", "aé日b"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := new(bytes.Buffer)
+			writeValueType(buf, ValueTypeClob)
+			writeClobPayload(buf, tc.input)
+
+			tr := mockTransferFromBytes(buf.Bytes())
+			val, err := tr.ReadValue(nil)
+			if err != nil {
+				t.Fatalf("ReadValue failed: %v", err)
+			}
+			got, ok := val.(string)
+			if !ok {
+				t.Fatalf("Expected string, got %T", val)
+			}
+			if got != tc.input {
+				t.Errorf("ReadValue: got %q, want %q", got, tc.input)
+			}
+		})
+	}
+}
+
+// TestReadValue_InlineClob_CharLengthNotBytes verifies that the CLOB header
+// length counts characters (Java chars / code points in BMP), not bytes.
+func TestReadValue_InlineClob_CharLengthNotBytes(t *testing.T) {
+	// "é" is 1 char but 2 bytes in the wire encoding; "☺" is 1 char, 3 bytes.
+	s := "é☺"
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeClob)
+	writeInt64(buf, 2)                  // 2 chars, but 5 payload bytes
+	buf.Write([]byte{0xc3, 0xa9})       // é
+	buf.Write([]byte{0xe2, 0x98, 0xba}) // ☺
+	writeInt32(buf, lobMagic)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err != nil {
+		t.Fatalf("ReadValue failed: %v", err)
+	}
+	if got := val.(string); got != s {
+		t.Errorf("ReadValue: got %q, want %q", got, s)
+	}
+}
+
+// TestReadValue_InlineClob_BadMagic verifies a wrong trailing magic errors.
+func TestReadValue_InlineClob_BadMagic(t *testing.T) {
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeClob)
+	writeInt64(buf, 1)
+	buf.WriteByte('a')
+	writeInt32(buf, 0x9999) // wrong magic
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err == nil {
+		t.Fatalf("expected error, got value %v", val)
+	}
+	if val != nil {
+		t.Errorf("expected nil value, got %v", val)
+	}
+}
+
+// TestReadValue_InlineClob_Truncated verifies a truncated payload errors.
+func TestReadValue_InlineClob_Truncated(t *testing.T) {
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeClob)
+	writeInt64(buf, 5)
+	buf.Write([]byte("ab")) // only 2 of 5 chars present
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err == nil {
+		t.Fatalf("expected error, got value %v", val)
+	}
+}
+
+// TestReadValue_InlineClob_CapExceeded verifies the char-length cap errors
+// before allocating or reading a giant payload.
+func TestReadValue_InlineClob_CapExceeded(t *testing.T) {
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeClob)
+	writeInt64(buf, maxInlineClobChars+1)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err == nil {
+		t.Fatalf("expected error, got value %v", val)
+	}
+	if val != nil {
+		t.Errorf("expected nil value, got %v", val)
+	}
+}
+
+// TestReadValue_InlineBlob verifies inline BLOB round-trip with magic.
+func TestReadValue_InlineBlob(t *testing.T) {
+	data := []byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeBlob)
+	writeInt64(buf, int64(len(data)))
+	buf.Write(data)
+	writeInt32(buf, lobMagic)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err != nil {
+		t.Fatalf("ReadValue failed: %v", err)
+	}
+	got, ok := val.([]byte)
+	if !ok {
+		t.Fatalf("Expected []byte, got %T", val)
+	}
+	if !bytes.Equal(got, data) {
+		t.Errorf("ReadValue: got %x, want %x", got, data)
+	}
+}
+
+// TestReadValue_InlineBlob_BadMagic verifies a wrong BLOB magic errors.
+func TestReadValue_InlineBlob_BadMagic(t *testing.T) {
+	buf := new(bytes.Buffer)
+	writeValueType(buf, ValueTypeBlob)
+	writeInt64(buf, 1)
+	buf.WriteByte(0x42)
+	writeInt32(buf, 0x9999)
+
+	tr := mockTransferFromBytes(buf.Bytes())
+	val, err := tr.ReadValue(nil)
+	if err == nil {
+		t.Fatalf("expected error, got value %v", val)
+	}
+}
+
+// TestReadValue_FetchOnDemandLOB verifies the length == -1 path still returns
+// ErrUnsupportedType and drains the fetch-on-demand metadata.
+func TestReadValue_FetchOnDemandLOB(t *testing.T) {
+	for _, vt := range []int32{ValueTypeBlob, ValueTypeClob} {
+		buf := new(bytes.Buffer)
+		writeValueType(buf, vt)
+		writeInt64(buf, -1)              // fetch-on-demand marker
+		writeInt32(buf, 7)               // tableId
+		writeInt64(buf, 99)              // id
+		writeBytes(buf, []byte{1, 2, 3}) // hmac
+		if vt == ValueTypeClob {
+			writeInt64(buf, 12) // octetLength (protocol 20+)
+		}
+		writeInt64(buf, 34) // charLength / precision
+
+		tr := mockTransferFromBytes(buf.Bytes())
+		val, err := tr.ReadValue(nil)
+		if err == nil {
+			t.Fatalf("type %d: expected error, got value %v", vt, val)
+		}
+		if !errors.Is(err, ErrUnsupportedType) {
+			t.Errorf("type %d: expected ErrUnsupportedType, got %v", vt, err)
+		}
+		if val != nil {
+			t.Errorf("type %d: expected nil value, got %v", vt, val)
+		}
+	}
+}
+
 // TestReadValue_UnsupportedType ensures unsupported H2 types are surfaced
 // with the ErrUnsupportedType sentinel.
 func TestReadValue_UnsupportedType(t *testing.T) {

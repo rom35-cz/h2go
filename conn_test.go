@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -28,9 +29,6 @@ func TestConnPrepareSessionClosed(t *testing.T) {
 	_, err := c.Prepare("SELECT 1")
 	if err == nil {
 		t.Fatal("expected error")
-	}
-	if errors.Is(err, ErrNotYetSupported) {
-		t.Errorf("Prepare should be implemented; got ErrNotYetSupported")
 	}
 	if !strings.Contains(err.Error(), "session closed") {
 		t.Errorf("expected session closed error, got %v", err)
@@ -255,16 +253,6 @@ func TestConnAcquireAfterClose(t *testing.T) {
 	}
 }
 
-// TestErrNotYetSupported is a sentinel error that can be checked.
-func TestErrNotYetSupported(t *testing.T) {
-	if ErrNotYetSupported == nil {
-		t.Fatal("ErrNotYetSupported should not be nil")
-	}
-	if ErrNotYetSupported.Error() == "" {
-		t.Fatal("ErrNotYetSupported should have a message")
-	}
-}
-
 // TestConnPingClosedConnection verifies Ping returns ErrBadConn
 // when the connection is closed (because it tries to execute SELECT 1).
 func TestConnPingClosedConnection(t *testing.T) {
@@ -324,6 +312,84 @@ func TestConnResetSessionClosedConnection(t *testing.T) {
 	c := &conn{sess: nil}
 	if err := c.ResetSession(context.Background()); err != driver.ErrBadConn {
 		t.Fatalf("expected ErrBadConn for closed ResetSession, got %v", err)
+	}
+}
+
+// TestConnResetSessionAbortsOnTransportError verifies that a transport
+// failure during the ResetSession probe marks the session dead so the pool
+// discards the conn instead of reusing a half-broken session.
+func TestConnResetSessionAbortsOnTransportError(t *testing.T) {
+	addr := mockServer(t, func(serverConn net.Conn) {
+		tr := NewReadWriter(serverConn)
+		op, err := tr.ReadInt32()
+		if err != nil {
+			return
+		}
+		if op != SessionHasPendingTransaction {
+			t.Errorf("op = %d, want SessionHasPendingTransaction", op)
+			return
+		}
+		// Simulate a dead server: close the socket without answering.
+	})
+
+	cfg := &Config{Host: "127.0.0.1"}
+	host, port := parseAddr(t, addr)
+	cfg.Host = host
+	cfg.Port = port
+
+	clientConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	sess := &Session{tr: NewReadWriter(clientConn), cfg: cfg, autoCommit: true}
+	c := &conn{sess: sess}
+
+	err = c.ResetSession(context.Background())
+	if err != driver.ErrBadConn {
+		t.Fatalf("expected ErrBadConn on dead transport, got %v", err)
+	}
+	// The session must be marked dead, so any further acquire reports bad conn.
+	if !sess.dead.Load() {
+		t.Error("expected session dead flag set after ResetSession transport error")
+	}
+	if err := c.acquire(); err != driver.ErrBadConn {
+		t.Errorf("expected ErrBadConn after aborted session, got %v", err)
+	}
+}
+
+// TestSessionCloseDeadline verifies Session.Close does not block indefinitely
+// when the server never answers the STATUS_OK read: the close must complete
+// within roughly the closeStatusTimeout bound.
+func TestSessionCloseDeadline(t *testing.T) {
+	// This test uses a shortened timeout by pointing closeStatusTimeout at a
+	// small value is not possible (const), so assert completion within the
+	// real 2s bound plus slack. The server accepts and then stays silent.
+	addr := mockServer(t, func(serverConn net.Conn) {
+		tr := NewReadWriter(serverConn)
+		// Drain the SESSION_CLOSE int but never write the STATUS_OK reply.
+		_, _ = tr.ReadInt32()
+		// Block until the client gives up and closes the socket.
+		buf := make([]byte, 1)
+		_, _ = serverConn.Read(buf) // returns on client close
+	})
+
+	clientConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	sess := &Session{tr: NewReadWriter(clientConn)}
+
+	start := time.Now()
+	err = sess.Close()
+	elapsed := time.Since(start)
+	// Close returns the transport close error; best-effort semantics mean a
+	// nil or non-nil error are both acceptable here.
+	_ = err
+	if elapsed > closeStatusTimeout+500*time.Millisecond {
+		t.Errorf("Close blocked for %v, expected <= %v", elapsed, closeStatusTimeout)
+	}
+	if !sess.dead.Load() {
+		t.Error("expected session dead after Close")
 	}
 }
 

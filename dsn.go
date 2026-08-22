@@ -35,6 +35,17 @@ type Config struct {
 	// ParseDSN never populates Logger; callers must set it explicitly via
 	// Config / connector APIs (DSN strings cannot carry logger objects).
 	Logger *slog.Logger
+
+	// MaxRows bounds the number of rows the server will materialize for a
+	// single result set. It is forwarded as the protocol maxRows parameter of
+	// COMMAND_EXECUTE_QUERY. Zero (the default) means no limit, matching the
+	// H2 server semantics. Negative values are treated as zero.
+	MaxRows int64
+
+	// FetchSize controls how many rows the driver requests per
+	// RESULT_FETCH_ROWS batch while streaming a result set. Zero (the default)
+	// uses defaultFetchSize (100). Negative values are treated as zero.
+	FetchSize int
 }
 
 // ParseDSN parses an H2 DSN string into a Config.

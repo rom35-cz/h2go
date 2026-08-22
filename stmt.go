@@ -144,7 +144,7 @@ func (s *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 	}
 	// For query rows, release happens on rows.Close().
 
-	rows, err := c.sess.ExecuteQueryPreparedWithParams(ctx, cmd, 0, defaultFetchSize, params)
+	rows, err := c.sess.ExecuteQueryPreparedWithParams(ctx, cmd, c.effectiveMaxRows(), c.effectiveFetchSize(), params)
 	if err != nil {
 		closeErr := s.finishOperation(c)
 		if closeErr != nil {

@@ -6,6 +6,10 @@ import (
 	"log/slog"
 )
 
+// defaultDriver is the shared Driver value returned by Connector.Driver.
+// Driver is stateless, so there is no reason to allocate a new one per call.
+var defaultDriver = &Driver{}
+
 // connector implements driver.Connector, providing a way to create
 // multiple connections with the same configuration. It is returned
 // by NewConnector and can be used with sql.OpenDB.
@@ -54,7 +58,7 @@ func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 //
 // Driver implements driver.Connector.
 func (c *connector) Driver() driver.Driver {
-	return &Driver{}
+	return defaultDriver
 }
 
 // Verify interface compliance at compile time.
