@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -65,6 +66,14 @@ func HandshakeContext(ctx context.Context, cfg *Config) (sess *Session, err erro
 			_ = tr.Abort()
 			if ctx.Err() != nil {
 				err = ctx.Err()
+			} else if deadline, ok := ctx.Deadline(); ok {
+				// Same deadline-race handling as Session.finalizeContext: a
+				// timeout-kind transport error can surface just before the
+				// context timer marks the context done.
+				var ne net.Error
+				if errors.As(err, &ne) && ne.Timeout() && time.Now().After(deadline) {
+					err = context.DeadlineExceeded
+				}
 			}
 			return
 		}

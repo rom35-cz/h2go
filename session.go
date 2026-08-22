@@ -3,6 +3,7 @@ package h2go
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -137,6 +138,25 @@ func (s *Session) finalizeContext(ctx context.Context, errp *error) {
 	if ctx != nil && ctx.Err() != nil {
 		_ = s.Abort()
 		*errp = ctx.Err()
+		return
+	}
+	if ctx == nil {
+		return
+	}
+	// The transport deadline is set to the context deadline by
+	// beginOperationContext, so an I/O timeout can surface a few microseconds
+	// BEFORE the context timer's callback marks the context done. Detect that
+	// window deterministically: a timeout-kind transport error observed after
+	// the context deadline has passed is the context deadline, and must abort
+	// the session just like the ctx.Err() path above.
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return
+	}
+	var ne net.Error
+	if errors.As(*errp, &ne) && ne.Timeout() && time.Now().After(deadline) {
+		_ = s.Abort()
+		*errp = context.DeadlineExceeded
 	}
 }
 
@@ -279,7 +299,8 @@ func (s *Session) ExecuteUpdatePreparedWithParams(ctx context.Context, cmd *Prep
 	}
 
 	// For column-number and column-name modes, write the selector data.
-	if genKeysMode == GeneratedKeysColumnNumbers {
+	switch genKeysMode {
+	case GeneratedKeysColumnNumbers:
 		cols := s.cfg.GeneratedKeysColumns
 		if cols == nil {
 			cols = []int{}
@@ -292,7 +313,8 @@ func (s *Session) ExecuteUpdatePreparedWithParams(ctx context.Context, cmd *Prep
 				return nil, wrapError("ExecuteUpdatePreparedWithParams: write column index", err)
 			}
 		}
-	} else if genKeysMode == GeneratedKeysColumnNames {
+
+	case GeneratedKeysColumnNames:
 		names := s.cfg.GeneratedKeysColumnNames
 		if names == nil {
 			names = []string{}

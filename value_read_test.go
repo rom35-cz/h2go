@@ -801,10 +801,10 @@ func TestReadValue_FetchOnDemandLOB(t *testing.T) {
 			go func() {
 				defer close(serverDone)
 				// Write value type + fetch-on-demand metadata.
-				serverTr.WriteInt32(vt) // type code
-				serverTr.WriteInt64(-1) // fetch-on-demand marker
-				serverTr.WriteInt32(7)  // tableId
-				serverTr.WriteInt64(99) // lobID
+				serverTr.WriteInt32(vt)              // type code
+				serverTr.WriteInt64(-1)              // fetch-on-demand marker
+				serverTr.WriteInt32(7)               // tableId
+				serverTr.WriteInt64(99)              // lobID
 				serverTr.WriteBytes([]byte{1, 2, 3}) // hmac
 				if vt == ValueTypeClob {
 					serverTr.WriteInt64(12) // octetLength

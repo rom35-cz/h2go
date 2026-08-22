@@ -254,8 +254,8 @@ func (tr *Tr) readIntervalValue() (driver.Value, error) {
 // remaining field (ordinal >= 5 in H2, which includes YEAR TO MONTH, DAY TO
 // HOUR, etc., not just SECONDS).
 type intervalQual struct {
-	name          string
-	hasRemaining  bool
+	name         string
+	hasRemaining bool
 }
 
 // intervalQualifier returns the interval qualifier metadata for the ordinal.
@@ -349,7 +349,10 @@ func (tr *Tr) readArrayValue(colType *TypeInfo) (driver.Value, error) {
 }
 
 // readRowValue reads a ROW value as a JSON-like string.
-func (tr *Tr) readRowValue(colType *TypeInfo) (driver.Value, error) {
+// The colType parameter is accepted for signature symmetry with
+// readArrayValue, but for MVP each field is decoded without element type
+// hints (a future version could use ExtTypeInfo to look up field types).
+func (tr *Tr) readRowValue(_ *TypeInfo) (driver.Value, error) {
 	length, err := tr.ReadInt32()
 	if err != nil {
 		return nil, fmt.Errorf("h2go: readRowValue: failed to read length: %w", err)

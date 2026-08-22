@@ -62,7 +62,9 @@ func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 		Columns: meta.ColumnNames(),
 	}
 
-	// Read all rows.
+	// Read all rows. For rowCount <= 0 there is nothing to consume: H2's
+	// sendRows exits immediately when count <= 0, so no end-of-row marker
+	// is sent either.
 	if rowCount > 0 {
 		result.Rows = make([][]driver.Value, 0, rowCount)
 		for i := int64(0); i < rowCount; i++ {
@@ -89,10 +91,6 @@ func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 			}
 			result.Rows = append(result.Rows, row)
 		}
-	} else {
-		// rowCount <= 0: no rows, but read possible end-of-row marker.
-		// H2's sendRows with count <= 0 exits immediately, so there is no
-		// marker to consume.
 	}
 
 	// Try to extract the single numeric LastInsertID.
