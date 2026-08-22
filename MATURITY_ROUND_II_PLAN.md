@@ -736,6 +736,29 @@ CGO_ENABLED=0 go build ./...
 **Done when:** all commands green; CHANGELOG/ACCEPTANCE in sync; no open
 findings in `MATURITY_ROUND_II.md` without a resolution marker.
 
+**Status: DONE** (2026-08-22). Implementation notes:
+- `MATURITY_ROUND_II.md`: 17 resolution markers inserted under finding
+  headings in the Round I `> ☑ **Resolved (Task N, commit X):**` convention,
+  each naming its implementing task and commit (c09e457…a53672 range).
+  Finding 2 keeps its ⛔ retraction marker; finding 19 keeps its pre-plan
+  fixed marker (commit 7a8c6f7) per plan.
+- `CHANGELOG.md`: Unreleased intro now covers both reviews. Fixed gained the
+  Round II bullets (batch-boundary LOB resolution, canonical INTERVAL text,
+  deterministic session discard incl. the deadline-race determinism, wire
+  caps, legacy skip-error propagation); Added gained the new/extended test
+  bullets; new Documentation subsection covers DSN parameters, generated-keys
+  scope, ARRAY/ROW/JSON/ENUM rendering notes, and CLOB surrogates; Removed
+  lists the two dead session methods alongside ErrNotYetSupported.
+- `docs/ACCEPTANCE.md`: three new §10.3 rows (exact complex-type decoding,
+  LOB streaming regardless of batch position, generated-keys internal+external
+  reachability), scalar-values row annotated with exact-goldens note; Notes
+  section gained a "Documented limitations" inventory from Tasks 6/7/9 plus
+  Task 1's nested ARRAY/ROW LOB rejection so docs and code stay in sync.
+- Final matrix executed against a freshly seeded H2 (`make db-seed`):
+  build OK, vet OK (both tags), gofmt empty, golangci-lint 0 issues (both
+  tags), unit ok, unit -race ok, integration ok (301 passing test/subtest
+  cases), integration -race ok, CGO_ENABLED=0 build OK.
+
 ---
 
 ## Out of scope for this plan (stays in the post-MVP backlog)

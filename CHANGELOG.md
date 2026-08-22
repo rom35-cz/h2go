@@ -4,13 +4,31 @@ All notable changes to `h2go` will be documented in this file.
 
 ## [Unreleased] (v0.2.0 preview)
 
-Post-MVP maturity fixes from the `MATURITY_MVP.md` review.
+Post-MVP maturity fixes from the `MATURITY_MVP.md` and `MATURITY_ROUND_II.md`
+reviews.
 
 ### Fixed
 
 - Inline `CLOB` values are now decoded to `string` (previously returned
   `ErrUnsupportedType`), matching the documented supported-types matrix.
   Fetch-on-demand LOBs are fetched via the `LOB_READ` protocol.
+- Fetch-on-demand LOBs resolve at batch boundaries: a deferred LOB anywhere
+  in a result batch (extra columns, extra rows, across fetch-size batches,
+  inside generated-keys frames) resolves correctly instead of desynchronizing
+  the stream (`unexpected status 15` / `16777216` failure shapes).
+- `formatInterval` renders H2's canonical INTERVAL text exactly (sign on the
+  leading field only, two-digit sub-fields, trimmed fractions), verified
+  against `CAST(... AS VARCHAR)` on live H2.
+- Mid-stream decode errors (truncated frames, timeouts during row streaming)
+  deterministically mark the session dead so database/sql discards the
+  connection instead of reusing one whose stream position is unknown.
+- Context deadlines during command preparation/streaming now report
+  `context.DeadlineExceeded` deterministically even when the transport timeout
+  surfaces microseconds before the context timer fires.
+- Wire-controlled counts and lengths are capped before allocation: ARRAY/ROW
+  element counts, generated-keys row counts, inline BLOB lengths, CLOB char
+  lengths (derived from `MaxWireLength`), and LOB chunk sizes; the legacy ARRAY
+  type-name skip error is returned instead of discarded.
 - `sql.ColumnType.DecimalSize()` now reports "unknown" for scale-less
   `NUMERIC(a)` instead of falsely claiming scale 0.
 - `HandshakeContext` now returns the wrapped context error (e.g.
@@ -48,7 +66,17 @@ Post-MVP maturity fixes from the `MATURITY_MVP.md` review.
 - `TestIntegration_ComplexTypeDecoding`: end-to-end validation of ENUM,
   INTERVAL, ARRAY, and ROW value decoding.
 - `TestIntegration_FetchOnDemandLOB`: end-to-end validation of LOB_READ
-  streaming for BLOB and CLOB values exceeding the inline threshold.
+  streaming for BLOB and CLOB values exceeding the inline threshold, extended
+  with multi-column/multi-row/mixed/batch-boundary shapes and pool sanity.
+- `TestIntegration_IntervalCanonicalMatrix`: driver INTERVAL decoding compared
+  against H2's own canonical text for 18 expressions.
+- `TestIntegration_ComplexTypeDecoding`: exact golden assertions for ENUM
+  ordinal, INTERVAL text, ARRAY rendering incl. NULL elements (`<nil>`), and
+  ROW text.
+- `TestIntegration_GeneratedKeysWithLob`: fetch-on-demand LOB inside a
+  generated-keys frame.
+- `TestIntegration_GeneratedKeysProviderExternal`: package-external proof of
+  generated-keys reachability through `sql.Conn.Raw()`.
 - `TestIntegration_GeneratedKeysMultiColumn`: multi-column generated keys
   via `GeneratedKeysColumnNumbers`.
 - `TestIntegration_GeneratedKeysNoKeys`: `GeneratedKeysMode=none` disables
@@ -73,10 +101,30 @@ Previously unsupported types now decode to documented Go representations:
 
 - Defensive wire caps: `ReadString`/`ReadBytes` and the inline CLOB decoder
   reject length fields above `MaxWireLength` (512 MiB) before allocating.
+- `localTimeZoneID` validates its candidate with `time.LoadLocation` and falls
+  back to UTC with a debug log instead of sending an unparseable `TZ` value to
+  the server.
+
+### Documentation
+
+- New "DSN parameters" docs (README + godoc): only `USER`/`PASSWORD` are
+  consumed; everything else is parsed into `Config.Params` but not applied,
+  with the risky examples called out (`IFEXISTS`, `ACCESS_MODE_DATA`,
+  `AUTO_SERVER`). Each connection logs the ignored keys at debug level.
+- Generated-keys configuration documented as connection-level (JDBC is per-
+  statement), including the separate-handles workaround and the
+  `GeneratedKeysModeSet` escape hatch required to turn keys off.
+- README supported-types table now documents exact ARRAY/ROW rendering
+  (NULL elements as `<nil>`), that JSON/GEO/OBJECT bytes are exactly what H2
+  serializes, and that ENUM parameters ride as VARCHAR.
+- Inline-CLOB lone-surrogate handling documented (U+FFFD substitution; Go
+  strings cannot carry lone surrogates).
 
 ### Removed
 
 - `ErrNotYetSupported` (unused since prepare/transactions landed).
+- Unused `Session.readGeneratedKeysLastInsertID` and
+  `Session.discardGeneratedKeyRows`.
 
 ## [v0.1.0] - 2026-07-10
 

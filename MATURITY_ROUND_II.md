@@ -16,6 +16,8 @@ verified against the live server where noted.
 ## P1 — Must fix before building on top / before any release that claims these features
 
 ### 1. `fetchLobOnDemand` violates the sequential-command nature of the protocol — fetch-on-demand LOBs fail whenever anything follows them in the batch (P1)
+> ☑ **Resolved (Task 1, commit c09e457):** Deferred fetch-on-demand LOBs resolve in wire order at each batch boundary (`lobCollector`/`pendingLob`); all audit repro shapes pass live.
+
 
 - Reference: `value_read.go` `fetchLobOnDemand` (writes `LOB_READ` op onto the session stream mid-row-parse, then immediately reads status).
 - Evidence (live probe, reproducible): with `SELECT c, b FROM probe_lob WHERE id=1`
@@ -68,6 +70,8 @@ verified against the live server where noted.
 > rendering gaps remain and are tracked under finding 3.
 
 ### 3. `formatInterval` produces misleading/invalid interval text for second-bearing qualifiers (P1/P2 boundary)
+> ☑ **Resolved (Task 2, commit 6aa79d0):** `formatInterval` transcribes IntervalUtils.appendInterval/DateTimeUtils.appendNanos; 30-expression golden matrix live-verified.
+
 
 - Reference: `value_read.go` `formatInterval`.
 - Evidence (live probes):
@@ -95,6 +99,8 @@ verified against the live server where noted.
   these outputs are neither round-trippable nor reliably readable.
 
 ### 4. `GeneratedKeysResult` is unreachable through the public API (P1)
+> ☑ **Resolved (Task 3, commit 4ec9c3b):** Exported `GeneratedKeysProvider` + `GetGeneratedKeys`; package-external integration test proves reachability via sql.Conn.Raw().
+
 
 - Reference: `result.go` (unexported type `result` carries exported field
   `GeneratedKeys *GeneratedKeysResult`), README line "extended generated-key APIs ...
@@ -116,6 +122,8 @@ verified against the live server where noted.
 ## P2 — Fix before widening scope or claiming hardening
 
 ### 5. Unbounded allocations from wire-controlled lengths remain in the new decoders (P2)
+> ☑ **Resolved (Task 4, commit b471647):** maxWireCollectionElements cap on ARRAY/ROW/generated-keys rowCount; inline BLOB/CLOB caps derived from MaxWireLength; no unguarded make() remains in scope.
+
 
 Round I finding 10 added `MaxWireLength` caps to `ReadString`/`ReadBytes`, but commit
 `8b8c492` reintroduced the same class of exposure elsewhere:
@@ -137,6 +145,8 @@ Round I finding 10 added `MaxWireLength` caps to `ReadString`/`ReadBytes`, but c
   wire length.
 
 ### 6. Mid-batch decode errors poison the pooled connection without marking the session dead (P2)
+> ☑ **Resolved (Tasks 1+5, commit 2ee7a55):** Task 1 aborted on LOB-resolution failures; Task 5 generalized: any non-aligned decode failure marks the session dead before the sticky error returns.
+
 
 - Reference: `rows.go` (`Rows.Next` sets sticky `r.err`, `Rows.Close` sends
   RESULT_CLOSE/COMMAND_CLOSE best-effort), `conn.go` (release via closeCallback).
@@ -150,6 +160,8 @@ Round I finding 10 added `MaxWireLength` caps to `ReadString`/`ReadBytes`, but c
   a result-read error occurs, so the pool discards the conn deterministically.
 
 ### 7. `Config.Params` is parsed but never consumed — JDBC parameters are silently ignored (P2)
+> ☑ **Resolved (Task 6, commit 26c731e):** README/doc.go 'DSN parameters' sections document parsed-but-not-applied behavior; connector logs ignored keys at debug level.
+
 
 - Reference: `dsn.go` populates `cfg.Params` (semicolon params for JDBC URLs, query
   params for native URLs); grep shows no reader anywhere in the driver.
@@ -161,6 +173,8 @@ Round I finding 10 added `MaxWireLength` caps to `ReadString`/`ReadBytes`, but c
   ignored) or critical ones rejected/warned. Currently nothing in README/doc.go mentions it.
 
 ### 8. Generated-keys mode is connection-level configuration, not per-statement (P2, API shape)
+> ☑ **Resolved (Task 7, commit e32850a):** README + Config field docs state the connection-level scope, separate-handle workaround, and GeneratedKeysModeSet escape hatch.
+
 
 - Reference: `Config.GeneratedKeysMode/Set/Columns/ColumnNames` live on the DSN config;
   `Session.generatedKeysMode()` reads them for every update on that session.
@@ -171,6 +185,8 @@ Round I finding 10 added `MaxWireLength` caps to `ReadString`/`ReadBytes`, but c
   per-context/per-statement override mechanism later.
 
 ### 9. Integration tests assert far less than the documented behavior they claim to cover (P2)
+> ☑ **Resolved (Task 8, commit ec4bab3):** ComplexTypeDecoding now asserts exact goldens (ENUM ordinal, INTERVAL text, ARRAY incl. NULL rendering, ROW); FetchOnDemandLOB covers all audit repro shapes plus pool sanity.
+
 
 - `TestIntegration_ComplexTypeDecoding` asserts only `strings.Contains(intervalStr, "1")`
   for INTERVAL — it passes with the broken negative-interval output (finding 2) and the
@@ -188,12 +204,16 @@ Round I finding 10 added `MaxWireLength` caps to `ReadString`/`ReadBytes`, but c
 ## P3 — Minor / cosmetic / documentation
 
 ### 10. ARRAY NULL-element rendering is unspecified (P3)
+> ☑ **Resolved (Tasks 8+9, commit a5e3672):** NULL-element rendering pinned by assertion (Task 8) and documented in README (Task 9).
+
 
 Live probe: `ARRAY['a','b,c',NULL]` → `"[a,b,c,<nil>]"` (Go `%v` of nil). Fine as a
 documented fallback once it is actually documented in README/PRD §7.14; currently the
 docs just say "comma-separated elements in brackets".
 
 ### 11. `isLastInsertIDUnavailable` matches by error-string substring (P3)
+> ☑ **Resolved (Task 9, commit a5e3672):** isLastInsertIDUnavailable now uses errors.Is.
+
 
 `generated_keys.go`: `strings.Contains(err.Error(), ErrLastInsertIDUnavailable.Error())`.
 Fragile if wording changes and defeats wrapping. Use `errors.Is(err, ErrLastInsertIDUnavailable)`
@@ -201,6 +221,8 @@ Fragile if wording changes and defeats wrapping. Use `errors.Is(err, ErrLastInse
 callers wrap without `%w` — fix the wrapping instead).
 
 ### 12. Dead code and gofmt drift introduced post-v0.1.0 (P3)
+> ☑ **Resolved (7a8c6f7 + Task 9, commit a5e3672):** gofmt/staticcheck fixed pre-plan (7a8c6f7); dead methods deleted and Makefile fmt/fmt-check guard rail added in Task 9.
+
 
 - `generated_keys.go`: `discardGeneratedKeyRows` and `readGeneratedKeysLastInsertID`
   have zero callers (not even tests). Remove or wire up.
@@ -210,6 +232,8 @@ callers wrap without `%w` — fix the wrapping instead).
   regressions surface only manually.
 
 ### 13. JSON representation quirk worth documenting (P3)
+> ☑ **Resolved (Task 9, commit a5e3672):** README notes JSON/GEO/OBJECT bytes are exactly what H2 serializes (outer quoting included).
+
 
 Live probe: `SELECT '{"k":1}'::JSON` returns `[]byte("\"{\\\"k\\\":1}\"")` — i.e. the
 payload includes H2's outer quoting. Cross-checked against H2's own tools: the H2 Shell
@@ -218,6 +242,8 @@ README note ("bytes are exactly what H2 serializes; quoting included") so nobody
 files this as a driver bug.
 
 ### 14. ENUM parameters ride as VARCHAR (P3)
+> ☑ **Resolved (Task 9, commit a5e3672):** README notes ENUM parameters ride as VARCHAR and are coerced by the server.
+
 
 `WriteValue` maps string params to VARCHAR even when param metadata says ENUM
 (no `ValueTypeEnum` case). Live probe confirms INSERT succeeds via server-side
@@ -225,6 +251,8 @@ coercion, so this is acceptable — but it is undocumented behavior; one sentenc
 README ("ENUM parameters are sent as strings and coerced server-side") would close it.
 
 ### 15. Inline-CLOB surrogate edge decodes to U+FFFD (P3)
+> ☑ **Resolved (Task 9, commit a5e3672):** readClobChar documents lone-surrogate to U+FFFD mapping; behavior unchanged (debug log skipped: Tr carries no logger).
+
 
 `readClobChar` implements H2's 1/2/3-byte scheme correctly (supplementary chars arrive
 as surrogate-pair halves, each ≤ 3 bytes ✓ verified against bytecode). However a lone
@@ -233,6 +261,8 @@ with U+FFFD — data substitution without any signal. Edge-case only; a comment 
 log would suffice.
 
 ### 16. Fetch-on-demand BLOB frame field naming confusion (P3)
+> ☑ **Resolved (Task 1, commit c09e457):** BLOB frame long renamed precision; CLOB keeps octetLength + precision; verified against Transfer.readValue source.
+
 
 `readLOBValue` names the single trailing precision long `charLength` for BLOBs and
 then treats it as total bytes in `fetchLobOnDemand` ("BLOB sends precision in
@@ -241,12 +271,16 @@ charLength field"). Functionally correct (verified: BLOB frame is
 octetLength+charLength), but the naming invites future bugs. Rename/re-comment.
 
 ### 17. `readArrayValue` ignores the skip-path ReadString error (P3)
+> ☑ **Resolved (Task 4, commit b471647):** Legacy ARRAY type-name skip error is wrapped and returned instead of discarded.
+
 
 In the legacy `length < 0` branch, `_, _ = tr.ReadString()` discards the error; a
 truncated stream then continues misaligned into element decoding. Fold into finding 6's
 error handling or return the error.
 
 ### 18. `localTimeZoneID` trusts `TZ` verbatim (P3)
+> ☑ **Resolved (Task 9, commit a5e3672):** localTimeZoneID validates its candidate with time.LoadLocation and falls back to UTC with a debug log; unit-tested.
+
 
 `handshake.go` sends `os.Getenv("TZ")` unchanged; a garbage TZ value is forwarded to
 the server during SESSION_SET_ID. Harmless against lenient servers; consider

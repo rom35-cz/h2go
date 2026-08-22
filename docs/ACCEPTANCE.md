@@ -20,7 +20,10 @@ This document maps PRD §10 acceptance criteria to the implemented test coverage
 | 10.3 | Can create a table | `TestIntegration_ExecContext`, `TestIntegration_ExecContextWithParams` |
 | 10.3 | Can insert rows with parameters | `TestIntegration_ExecContextWithParams`, `TestIntegration_PreparedStatements` |
 | 10.3 | Can query rows | `TestIntegration_QueryContext`, `TestIntegration_QuerySelect`, `TestIntegration_QueryLargeResult`, `TestIntegration_QueryContextWithParams`, `TestIntegration_PreparedStatements`, `TestIntegration_MaxRows` |
-| 10.3 | Can scan common scalar values | `TestIntegration_ScalarTypeDecoding`, `TestIntegration_ScalarRoundTripTable`, `TestIntegration_NullDecoding`, `TestIntegration_TypeShowcaseFullSelect`, `TestIntegration_ComplexTypeDecoding` |
+| 10.3 | Can scan common scalar values | `TestIntegration_ScalarTypeDecoding`, `TestIntegration_ScalarRoundTripTable`, `TestIntegration_NullDecoding`, `TestIntegration_TypeShowcaseFullSelect`, `TestIntegration_ComplexTypeDecoding` (exact goldens) |
+| 10.3 | ENUM/INTERVAL/ARRAY/ROW decode to exact documented representations | `TestIntegration_ComplexTypeDecoding` (golden strings incl. ARRAY NULL rendering), `TestIntegration_IntervalCanonicalMatrix` (driver vs H2 canonical text) |
+| 10.3 | Large LOBs stream correctly regardless of position in the result batch | `TestIntegration_FetchOnDemandLOB` (two-column, multi-row, mixed inline/on-demand, fetch-size boundary shapes, pool sanity) |
+| 10.3 | Generated keys are reachable internally and from outside the package | `TestIntegration_GeneratedKeysMultiColumn`, `TestIntegration_GeneratedKeysWithLob`, `TestIntegration_GeneratedKeysProviderExternal` |
 | 10.3 | Can update rows and return rows affected | `TestIntegration_ExecContext`, `TestIntegration_ExecContextWithParams` |
 | 10.3 | Can delete rows and return rows affected | `TestIntegration_ExecContext`, `TestIntegration_ExecContextWithParams` |
 | 10.3 | Can commit a transaction | `TestIntegration_TransactionCommit` |
@@ -49,3 +52,24 @@ The following commands were used to confirm the acceptance matrix and the implem
 
 - Integration tests use the local `h2-data` environment and skip cleanly when the H2 server or credentials are unavailable.
 - The matrix above intentionally references both unit and integration tests; PRD §10 acceptance spans both categories.
+
+### Documented limitations (Round II, Tasks 6/7/9)
+
+These behaviors are deliberate and documented; they are listed here so the
+docs and code stay in sync:
+
+- DSN parameters other than `USER`/`PASSWORD` are parsed into `Config.Params`
+  but not applied (`IFEXISTS=TRUE` does not prevent auto-create, etc.); each
+  connection logs the ignored keys at debug level.
+- Generated-keys configuration is connection-level: the mode applies to every
+  update on connections created from that Config; turning keys off requires
+  `GeneratedKeysModeSet = true` because `GeneratedKeysNone == 0`.
+- ARRAY NULL elements render as `<nil>` inside the bracketed text; ROW fields
+  render comma-joined inside parentheses.
+- JSON/GEO/OBJECT scan values are exactly the bytes H2 serializes (H2's own
+  JSON text rendering includes outer double quotes).
+- ENUM parameters are sent as VARCHAR and coerced by the server.
+- Inline-CLOB lone surrogates decode as U+FFFD (Go strings cannot carry lone
+  surrogates).
+- Fetch-on-demand LOBs nested inside ARRAY/ROW containers are rejected with
+  `ErrUnsupportedType`.
