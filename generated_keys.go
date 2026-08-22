@@ -2,6 +2,7 @@ package h2go
 
 import (
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -38,6 +39,10 @@ func (gkr *GeneratedKeysResult) SingleInt64() (int64, error) {
 // readGeneratedKeys reads the full generated-keys result set that follows an
 // update response. It returns the parsed result and also extracts the single
 // numeric LastInsertID when possible.
+//
+// Fetch-on-demand LOBs inside the keys frame are collected while the frame is
+// parsed and resolved after it has been fully consumed (batch-boundary rule;
+// see Rows.fetchRows). Resolution failures abort the session.
 func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 	if s == nil || s.tr == nil {
 		return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: session closed")
@@ -62,18 +67,24 @@ func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 		Columns: meta.ColumnNames(),
 	}
 
+	lc := &lobCollector{}
+
 	// Read all rows. For rowCount <= 0 there is nothing to consume: H2's
 	// sendRows exits immediately when count <= 0, so no end-of-row marker
 	// is sent either.
 	if rowCount > 0 {
 		result.Rows = make([][]driver.Value, 0, rowCount)
 		for i := int64(0); i < rowCount; i++ {
-			row, err := s.readGeneratedKeyRow(meta)
+			lc.curRow = len(result.Rows)
+			row, err := s.readGeneratedKeyRow(meta, lc)
 			if err != nil {
 				// ioEOF means the server signalled end-of-result early
 				// (fewer rows than advertised). Stop reading.
 				if _, ok := err.(ioEOF); ok {
 					break
+				}
+				if errors.Is(err, errNestedOnDemandLOB) {
+					_ = s.Abort()
 				}
 				return nil, 0, err
 			}
@@ -82,15 +93,30 @@ func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 	} else if rowCount < 0 {
 		// rowCount < 0: eager result, read until ioEOF.
 		for {
-			row, err := s.readGeneratedKeyRow(meta)
+			lc.curRow = len(result.Rows)
+			row, err := s.readGeneratedKeyRow(meta, lc)
 			if err != nil {
 				if _, ok := err.(ioEOF); ok {
 					break
+				}
+				if errors.Is(err, errNestedOnDemandLOB) {
+					_ = s.Abort()
 				}
 				return nil, 0, err
 			}
 			result.Rows = append(result.Rows, row)
 		}
+	}
+
+	// Keys frame fully consumed: resolve any deferred fetch-on-demand LOBs
+	// while the server has no in-flight frame, then splice them into place.
+	for _, p := range lc.pending {
+		v, err := s.tr.fetchLob(p)
+		if err != nil {
+			_ = s.Abort()
+			return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: failed to resolve deferred LOB (row %d column %d): %w", p.row, p.col, err)
+		}
+		result.Rows[p.row][p.col] = v
 	}
 
 	// Try to extract the single numeric LastInsertID.
@@ -112,7 +138,7 @@ func (s *Session) readGeneratedKeysLastInsertID() (int64, error) {
 	return id, nil
 }
 
-func (s *Session) readGeneratedKeyRow(meta *ResultMeta) ([]driver.Value, error) {
+func (s *Session) readGeneratedKeyRow(meta *ResultMeta, lc *lobCollector) ([]driver.Value, error) {
 	rowFlag, err := s.tr.ReadByte()
 	if err != nil {
 		return nil, fmt.Errorf("h2go: readGeneratedKeyRow: failed to read row flag: %w", err)
@@ -126,7 +152,8 @@ func (s *Session) readGeneratedKeyRow(meta *ResultMeta) ([]driver.Value, error) 
 			if col == nil {
 				return nil, fmt.Errorf("h2go: readGeneratedKeyRow: missing metadata for column %d", i)
 			}
-			value, err := s.tr.ReadValue(col.TypeInfo)
+			lc.curCol = i
+			value, err := s.tr.readValueInternal(col.TypeInfo, lc)
 			if err != nil {
 				return nil, fmt.Errorf("h2go: readGeneratedKeyRow: failed to read column %d: %w", i, err)
 			}

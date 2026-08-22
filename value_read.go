@@ -7,6 +7,7 @@ package h2go
 import (
 	"bytes"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -24,7 +25,22 @@ import (
 // The colType parameter provides column-level type metadata used for recursive
 // decoding of complex types such as ARRAY (where ExtTypeInfo holds the element
 // type). For simple types the parameter is not needed.
+//
+// Standalone decoding: a fetch-on-demand LOB is fetched immediately via
+// LOB_READ requests. Row readers must instead use readValueInternal with a
+// lobCollector so deferred LOBs are transferred at the batch boundary (see
+// Rows.fetchRows).
 func (tr *Tr) ReadValue(colType *TypeInfo) (driver.Value, error) {
+	return tr.readValueInternal(colType, nil)
+}
+
+// readValueInternal decodes a single value like ReadValue, but routes
+// fetch-on-demand LOBs through lc when one is supplied: instead of issuing
+// mid-batch LOB_READ requests (which desynchronizes the stream, because the
+// server services operations only after finishing the in-flight batch), a
+// placeholder is recorded in the collector and resolved by the caller at the
+// batch boundary. A nil lc fetches immediately.
+func (tr *Tr) readValueInternal(colType *TypeInfo, lc *lobCollector) (driver.Value, error) {
 	// Read the value type code (this is the ValueType constant, not TI)
 	typeCode, err := tr.ReadInt32()
 	if err != nil {
@@ -84,8 +100,9 @@ func (tr *Tr) ReadValue(colType *TypeInfo) (driver.Value, error) {
 		return tr.readUUIDValue()
 
 	case ValueTypeBlob, ValueTypeClob:
-		// For MVP, we read the inline LOB data or return an error for fetch-on-demand
-		return tr.readLOBValue(typeCode)
+		// Inline LOB data is decoded directly; fetch-on-demand LOBs are either
+		// deferred via lc or fetched immediately when lc is nil.
+		return tr.readLOBValue(typeCode, lc)
 
 	case ValueTypeDecfloat:
 		// DECFLOAT is sent as a string
@@ -317,9 +334,49 @@ func formatInterval(qualifier string, leading, remaining int64) string {
 	}
 }
 
+// nestedLOBs is passed while decoding values nested inside ARRAY/ROW
+// containers. A fetch-on-demand LOB cannot be deferred there (the container
+// value is rendered eagerly and would embed a placeholder in its text), nor
+// fetched mid-batch (that would desynchronize the stream), so it is rejected
+// with a documented ErrUnsupportedType error.
+var nestedLOBs = &lobCollector{reject: true}
+
+// errNestedOnDemandLOB marks a fetch-on-demand LOB encountered while decoding
+// an ARRAY/ROW container element. It is wrapped together with ErrUnsupportedType
+// at the raise site and checked by row readers to abort the session: the
+// surrounding batch is left partially unconsumed on the wire, so the connection
+// must not return to the pool.
+var errNestedOnDemandLOB = errors.New("fetch-on-demand LOB inside ARRAY/ROW")
+
+// pendingLob records a fetch-on-demand LOB (wire length == -1) whose transfer
+// was deferred to the batch boundary. The frame fields match Transfer.readValue
+// in H2 2.4.240 exactly.
+type pendingLob struct {
+	typeCode    int32  // ValueTypeBlob or ValueTypeClob
+	lobID       int64  // server-side LOB identifier
+	hmac        []byte // MAC authenticating the LOB_READ request
+	octetLength int64  // CLOB only (protocol 20+): octet length; 0 for BLOB
+	precision   int64  // BLOB: precision in octets; CLOB: character length
+	row         int    // index of the row within the current batch buffer
+	col         int    // index of the column within the row
+}
+
+// lobCollector accumulates deferred fetch-on-demand LOBs while a result batch
+// or generated-keys frame is parsed. curRow/curCol are set by the row reader so
+// each recorded placeholder knows where its resolved value belongs.
+type lobCollector struct {
+	pending []*pendingLob
+	reject  bool // reject on-demand LOBs instead of recording them (ARRAY/ROW)
+	curRow  int
+	curCol  int
+}
+
 // readArrayValue reads an ARRAY value as a JSON-like string.
-// Each element is decoded recursively via ReadValue using the element type
-// from colType.ExtTypeInfo when available.
+// Each element is decoded recursively using the element type from
+// colType.ExtTypeInfo when available. Elements decode in "nested" mode: a
+// fetch-on-demand LOB inside an ARRAY is rejected with ErrUnsupportedType
+// (documented limitation), because the container value is rendered eagerly and
+// deferring would embed a placeholder in the rendered text.
 func (tr *Tr) readArrayValue(colType *TypeInfo) (driver.Value, error) {
 	length, err := tr.ReadInt32()
 	if err != nil {
@@ -339,7 +396,7 @@ func (tr *Tr) readArrayValue(colType *TypeInfo) (driver.Value, error) {
 	}
 	elems := make([]string, 0, length)
 	for i := int32(0); i < length; i++ {
-		elem, err := tr.ReadValue(elemType)
+		elem, err := tr.readValueInternal(elemType, nestedLOBs)
 		if err != nil {
 			return nil, fmt.Errorf("h2go: readArrayValue: element %d: %w", i, err)
 		}
@@ -360,8 +417,9 @@ func (tr *Tr) readRowValue(_ *TypeInfo) (driver.Value, error) {
 	fields := make([]string, 0, length)
 	for i := int32(0); i < length; i++ {
 		// For ROW with type info, we could look up the field type, but for MVP
-		// we decode each field without element type hints.
-		f, err := tr.ReadValue(nil)
+		// we decode each field without element type hints. Fields decode in
+		// "nested" mode like ARRAY elements (see readArrayValue).
+		f, err := tr.readValueInternal(nil, nestedLOBs)
 		if err != nil {
 			return nil, fmt.Errorf("h2go: readRowValue: field %d: %w", i, err)
 		}
@@ -405,42 +463,66 @@ func formatUUID(high, low int64) string {
 
 // readLOBValue reads a BLOB or CLOB value.
 // Inline LOBs (length >= 0) are decoded directly from the value stream.
-// Fetch-on-demand LOBs (length == -1) are fetched via LOB_READ requests
-// on the session's transfer stream.
-func (tr *Tr) readLOBValue(typeCode int32) (driver.Value, error) {
+// Fetch-on-demand LOBs (length == -1) are either recorded in lc for deferred
+// transfer at the batch boundary, fetched immediately (lc == nil), or rejected
+// when they appear nested inside an ARRAY/ROW container (lc == nestedLOBs).
+func (tr *Tr) readLOBValue(typeCode int32, lc *lobCollector) (driver.Value, error) {
 	length, err := tr.ReadInt64()
 	if err != nil {
 		return nil, fmt.Errorf("h2go: readLOBValue: failed to read length: %w", err)
 	}
 
-	// Fetch-on-demand LOB
+	// Fetch-on-demand LOB. Wire layout (Transfer.readValue, H2 2.4.240):
+	//   BLOB: tableId int . lobId long . hmac bytes . precision long
+	//   CLOB: tableId int . lobId long . hmac bytes . octetLength long . charLength long
 	if length == -1 {
 		tableID, err := tr.ReadInt32()
 		if err != nil {
 			return nil, fmt.Errorf("h2go: readLOBValue: failed to read tableID: %w", err)
 		}
-		lobID, err := tr.ReadInt64()
+		p := &pendingLob{
+			typeCode: typeCode,
+		}
+		if lc != nil {
+			p.row, p.col = lc.curRow, lc.curCol
+		}
+		p.lobID, err = tr.ReadInt64()
 		if err != nil {
 			return nil, fmt.Errorf("h2go: readLOBValue: failed to read lobID: %w", err)
 		}
-		hmac, err := tr.ReadBytes()
+		p.hmac, err = tr.ReadBytes()
 		if err != nil {
 			return nil, fmt.Errorf("h2go: readLOBValue: failed to read hmac: %w", err)
 		}
-		var octetLength int64
 		if typeCode == ValueTypeClob {
-			octetLength, err = tr.ReadInt64()
+			// Protocol 20+ sends both lengths for CLOB.
+			p.octetLength, err = tr.ReadInt64()
 			if err != nil {
 				return nil, fmt.Errorf("h2go: readLOBValue: failed to read octetLength: %w", err)
 			}
-		}
-		charLength, err := tr.ReadInt64()
-		if err != nil {
-			return nil, fmt.Errorf("h2go: readLOBValue: failed to read charLength: %w", err)
+			p.precision, err = tr.ReadInt64() // character length
+			if err != nil {
+				return nil, fmt.Errorf("h2go: readLOBValue: failed to read charLength: %w", err)
+			}
+		} else {
+			// BLOB frames carry only the precision (octet length).
+			p.precision, err = tr.ReadInt64()
+			if err != nil {
+				return nil, fmt.Errorf("h2go: readLOBValue: failed to read precision: %w", err)
+			}
 		}
 		_ = tableID // not needed for server-side lookup; lobID is the key
 
-		return tr.fetchLobOnDemand(typeCode, lobID, hmac, octetLength, charLength)
+		switch {
+		case lc == nil:
+			// Standalone decode: fetch immediately (legacy behaviour).
+			return tr.fetchLob(p)
+		case lc.reject:
+			return nil, fmt.Errorf("h2go: ReadValue: %w: %w is not supported", ErrUnsupportedType, errNestedOnDemandLOB)
+		default:
+			lc.pending = append(lc.pending, p)
+			return p, nil
+		}
 	}
 
 	if length < 0 {
@@ -476,19 +558,20 @@ func (tr *Tr) readLOBValue(typeCode int32) (driver.Value, error) {
 // Matches the server's limit of 16 * IO_BUFFER_SIZE (64 KiB).
 const lobReadChunkSize = 16 * 4096
 
-// fetchLobOnDemand fetches a fetch-on-demand LOB from the server by issuing
-// repeated LOB_READ requests until all data has been received.
-func (tr *Tr) fetchLobOnDemand(typeCode int32, lobID int64, hmac []byte, octetLength, charLength int64) (driver.Value, error) {
+// fetchLob transfers a deferred fetch-on-demand LOB by issuing repeated
+// LOB_READ requests until all data has been received.
+// It must only be called at a batch boundary — when no partially parsed result
+// batch is in flight — because the server services operations sequentially
+// after finishing the in-flight sendRows (see Rows.fetchRows).
+func (tr *Tr) fetchLob(p *pendingLob) (driver.Value, error) {
 	var totalBytes int64
-	// For BLOB, total is octet length (precision). For CLOB, we use octetLength
-	// if available, otherwise estimate from charLength.
-	if typeCode == ValueTypeBlob {
-		totalBytes = charLength // BLOB sends precision in charLength field
+	if p.typeCode == ValueTypeBlob {
+		totalBytes = p.precision // BLOB precision counts octets
 	} else {
-		totalBytes = octetLength
+		totalBytes = p.octetLength // CLOB octet length; 0 means unknown size
 	}
 	if totalBytes > MaxWireLength {
-		return nil, fmt.Errorf("h2go: fetchLobOnDemand: LOB length %d exceeds cap %d", totalBytes, MaxWireLength)
+		return nil, fmt.Errorf("h2go: fetchLob: LOB length %d exceeds cap %d", totalBytes, MaxWireLength)
 	}
 
 	var buf bytes.Buffer
@@ -499,35 +582,35 @@ func (tr *Tr) fetchLobOnDemand(typeCode int32, lobID int64, hmac []byte, octetLe
 	var offset int64
 	for {
 		if err := tr.WriteInt32(LobRead); err != nil {
-			return nil, fmt.Errorf("h2go: fetchLobOnDemand: write op: %w", err)
+			return nil, fmt.Errorf("h2go: fetchLob: write op: %w", err)
 		}
-		if err := tr.WriteInt64(lobID); err != nil {
-			return nil, fmt.Errorf("h2go: fetchLobOnDemand: write lobID: %w", err)
+		if err := tr.WriteInt64(p.lobID); err != nil {
+			return nil, fmt.Errorf("h2go: fetchLob: write lobID: %w", err)
 		}
-		if err := tr.WriteBytes(hmac); err != nil {
-			return nil, fmt.Errorf("h2go: fetchLobOnDemand: write hmac: %w", err)
+		if err := tr.WriteBytes(p.hmac); err != nil {
+			return nil, fmt.Errorf("h2go: fetchLob: write hmac: %w", err)
 		}
 		if err := tr.WriteInt64(offset); err != nil {
-			return nil, fmt.Errorf("h2go: fetchLobOnDemand: write offset: %w", err)
+			return nil, fmt.Errorf("h2go: fetchLob: write offset: %w", err)
 		}
 		if err := tr.WriteInt32(lobReadChunkSize); err != nil {
-			return nil, fmt.Errorf("h2go: fetchLobOnDemand: write length: %w", err)
+			return nil, fmt.Errorf("h2go: fetchLob: write length: %w", err)
 		}
 		if err := tr.Flush(); err != nil {
-			return nil, fmt.Errorf("h2go: fetchLobOnDemand: flush: %w", err)
+			return nil, fmt.Errorf("h2go: fetchLob: flush: %w", err)
 		}
 
 		status, err := tr.ReadInt32()
 		if err != nil {
-			return nil, fmt.Errorf("h2go: fetchLobOnDemand: read status: %w", err)
+			return nil, fmt.Errorf("h2go: fetchLob: read status: %w", err)
 		}
 		if status != StatusOK {
-			return nil, fmt.Errorf("h2go: fetchLobOnDemand: unexpected status %d", status)
+			return nil, fmt.Errorf("h2go: fetchLob: unexpected status %d", status)
 		}
 
 		actualLen, err := tr.ReadInt32()
 		if err != nil {
-			return nil, fmt.Errorf("h2go: fetchLobOnDemand: read actual length: %w", err)
+			return nil, fmt.Errorf("h2go: fetchLob: read actual length: %w", err)
 		}
 		if actualLen <= 0 {
 			break // end of LOB data
@@ -535,13 +618,13 @@ func (tr *Tr) fetchLobOnDemand(typeCode int32, lobID int64, hmac []byte, octetLe
 
 		chunk := make([]byte, actualLen)
 		if err := tr.ReadFull(chunk); err != nil {
-			return nil, fmt.Errorf("h2go: fetchLobOnDemand: read chunk: %w", err)
+			return nil, fmt.Errorf("h2go: fetchLob: read chunk: %w", err)
 		}
 		buf.Write(chunk)
 		offset += int64(actualLen)
 	}
 
-	if typeCode == ValueTypeClob {
+	if p.typeCode == ValueTypeClob {
 		// CLOB payload is UTF-8 encoded
 		return buf.String(), nil
 	}

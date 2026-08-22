@@ -1614,7 +1614,10 @@ func TestIntegration_ComplexTypeDecoding(t *testing.T) {
 }
 
 // TestIntegration_FetchOnDemandLOB verifies that large BLOB and CLOB values
-// exceeding the inline threshold are fetched via LOB_READ requests.
+// exceeding the inline threshold are fetched via LOB_READ requests, and —
+// after the Task 1 fix — regardless of where the LOB appears in the result
+// batch: followed by more columns, more rows, or across fetch-size boundaries
+// (MATURITY_ROUND_II_PLAN.md Task 1, finding 1).
 func TestIntegration_FetchOnDemandLOB(t *testing.T) {
 	env := integrationEnv(t)
 	if env == nil {
@@ -1623,11 +1626,13 @@ func TestIntegration_FetchOnDemandLOB(t *testing.T) {
 	db := integrationDB(t, env)
 	ctx := context.Background()
 
-	// Create a table with LOB columns and insert a CLOB value larger than the
-	// inline threshold (H2's default MAX_LENGTH_INPLACE_LOB is 256 bytes for CLOB).
+	// Create a table with LOB columns and insert values larger than the
+	// inline threshold (H2's default MAX_LENGTH_INPLACE_LOB is 256 bytes for
+	// CLOB).
 	table := integrationTxTableName("lob_demand")
 	_, err := db.ExecContext(ctx, `CREATE TABLE `+table+` (
 		id INT PRIMARY KEY,
+		small_clob CLOB,
 		large_clob CLOB,
 		large_blob BLOB
 	)`)
@@ -1638,41 +1643,258 @@ func TestIntegration_FetchOnDemandLOB(t *testing.T) {
 		_, _ = db.ExecContext(context.Background(), "DROP TABLE IF EXISTS "+table)
 	})
 
-	// Insert a 500-byte CLOB (exceeds default inline threshold).
-	largeStr := strings.Repeat("Hello World! ", 38) // 456 bytes
-	_, err = db.ExecContext(ctx, "INSERT INTO "+table+" (id, large_clob) VALUES (1, ?)", largeStr)
-	if err != nil {
-		t.Fatalf("INSERT CLOB: %v", err)
+	// Distinct payloads, each above the inline threshold.
+	clobA := strings.Repeat("Hello World! ", 38)            // 494 chars
+	clobB := strings.Repeat("Second Row CLOB ", 32)         // 512 chars
+	clobC := strings.Repeat("Two LOB Columns Here ", 24)    // 504 chars
+	clobD := strings.Repeat("Mixed Inline And Demand ", 22) // 528 chars
+	smallClob := "tiny inline clob"
+	blobC := bytes.Repeat([]byte{0xAB, 0xCD}, 250) // 500 bytes
+
+	inserts := []struct {
+		id           int
+		small, large string
+		blob         []byte
+	}{
+		{1, "", clobA, nil},
+		{2, "", clobB, nil},
+		{3, "", clobC, blobC},      // both LOB columns large: the "status 15" shape
+		{4, smallClob, clobD, nil}, // inline + on-demand in one row
+	}
+	for _, ins := range inserts {
+		_, err := db.ExecContext(ctx,
+			"INSERT INTO "+table+" (id, small_clob, large_clob, large_blob) VALUES (?, ?, ?, ?)",
+			ins.id, ins.small, ins.large, ins.blob)
+		if err != nil {
+			t.Fatalf("INSERT id=%d: %v", ins.id, err)
+		}
 	}
 
-	// Insert a 500-byte BLOB.
-	largeBytes := bytes.Repeat([]byte{0xAB, 0xCD}, 250) // 500 bytes
-	_, err = db.ExecContext(ctx, "INSERT INTO "+table+" (id, large_blob) VALUES (2, ?)", largeBytes)
-	if err != nil {
-		t.Fatalf("INSERT BLOB: %v", err)
+	t.Run("single column single row regression", func(t *testing.T) {
+		var clobVal string
+		err := db.QueryRowContext(ctx, "SELECT large_clob FROM "+table+" WHERE id = 1").Scan(&clobVal)
+		if err != nil {
+			t.Fatalf("SELECT CLOB: %v", err)
+		}
+		if clobVal != clobA {
+			t.Errorf("CLOB mismatch: got %d chars", len(clobVal))
+		}
+
+		var blobVal []byte
+		err = db.QueryRowContext(ctx, "SELECT large_blob FROM "+table+" WHERE id = 3").Scan(&blobVal)
+		if err != nil {
+			t.Fatalf("SELECT BLOB: %v", err)
+		}
+		if !bytes.Equal(blobVal, blobC) {
+			t.Errorf("BLOB: got %d bytes, want %d", len(blobVal), len(blobC))
+		}
+	})
+
+	// Shape: LOB column followed by another LOB column in the same row.
+	// Before the fix this failed with "unexpected status 15".
+	t.Run("two LOB columns in one row", func(t *testing.T) {
+		var gotClob string
+		var gotBlob []byte
+		err := db.QueryRowContext(ctx,
+			"SELECT large_clob, large_blob FROM "+table+" WHERE id = 3").Scan(&gotClob, &gotBlob)
+		if err != nil {
+			t.Fatalf("SELECT two LOB columns: %v", err)
+		}
+		if gotClob != clobC {
+			t.Errorf("CLOB mismatch (%d chars)", len(gotClob))
+		}
+		if !bytes.Equal(gotBlob, blobC) {
+			t.Errorf("BLOB mismatch: got %d bytes, want %d", len(gotBlob), len(blobC))
+		}
+	})
+
+	// Shape: multiple rows of one CLOB column. Before the fix this failed
+	// with "unexpected status 16777216" when parsing row 2.
+	t.Run("multiple rows of one CLOB column", func(t *testing.T) {
+		want := map[int]string{1: clobA, 2: clobB, 3: clobC, 4: clobD}
+		rows, err := db.QueryContext(ctx,
+			"SELECT id, large_clob FROM "+table+" WHERE id <= 4 ORDER BY id")
+		if err != nil {
+			t.Fatalf("SELECT multi-row CLOB: %v", err)
+		}
+		defer rows.Close()
+		seen := 0
+		for rows.Next() {
+			var id int
+			var got string
+			if err := rows.Scan(&id, &got); err != nil {
+				t.Fatalf("Scan row %d: %v", seen, err)
+			}
+			if got != want[id] {
+				t.Errorf("row %d CLOB mismatch: got %d chars, want %d", id, len(got), len(want[id]))
+			}
+			seen++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		if seen != 4 {
+			t.Errorf("saw %d rows, want 4", seen)
+		}
+	})
+
+	// Shape: LOB followed by a scalar column.
+	t.Run("LOB followed by scalar column", func(t *testing.T) {
+		var got string
+		var id int
+		err := db.QueryRowContext(ctx,
+			"SELECT large_clob, id FROM "+table+" WHERE id = 1").Scan(&got, &id)
+		if err != nil {
+			t.Fatalf("SELECT CLOB + scalar: %v", err)
+		}
+		if got != clobA || id != 1 {
+			t.Errorf("got %d chars / id=%d", len(got), id)
+		}
+	})
+
+	// Shape: inline LOB and on-demand LOB in one row.
+	t.Run("mixed inline and on-demand LOBs", func(t *testing.T) {
+		var gotLarge, gotSmall string
+		err := db.QueryRowContext(ctx,
+			"SELECT large_clob, small_clob FROM "+table+" WHERE id = 4").Scan(&gotLarge, &gotSmall)
+		if err != nil {
+			t.Fatalf("SELECT mixed LOBs: %v", err)
+		}
+		if gotLarge != clobD || gotSmall != smallClob {
+			t.Errorf("mixed row mismatch: large=%d chars small=%q", len(gotLarge), gotSmall)
+		}
+	})
+
+	// Shape: batch boundary crossing — one row per RESULT_FETCH_ROWS batch,
+	// so deferred LOBs must resolve at several successive mid-result
+	// boundaries. Uses a dedicated handle with Config.FetchSize = 1 (there is
+	// no per-statement fetch size).
+	t.Run("fetch size one crosses every boundary", func(t *testing.T) {
+		cfg, err := ParseDSN(env["JDBC_URL"])
+		if err != nil {
+			t.Fatalf("ParseDSN: %v", err)
+		}
+		MergeCredentials(cfg, env["JDBC_USER"], env["JDBC_PASSWORD"])
+		cfg.FetchSize = 1
+		batchDB, err := OpenDB(cfg)
+		if err != nil {
+			t.Fatalf("OpenDB(fetchSize=1): %v", err)
+		}
+		defer batchDB.Close()
+
+		want := map[int]string{1: clobA, 2: clobB, 3: clobC, 4: clobD}
+		rows, err := batchDB.QueryContext(ctx,
+			"SELECT id, large_clob FROM "+table+" ORDER BY id")
+		if err != nil {
+			t.Fatalf("batched SELECT: %v", err)
+		}
+		defer rows.Close()
+		seen := 0
+		for rows.Next() {
+			var id int
+			var got string
+			if err := rows.Scan(&id, &got); err != nil {
+				t.Fatalf("Scan batched row %d: %v", seen, err)
+			}
+			if got != want[id] {
+				t.Errorf("batched row %d CLOB mismatch: got %d chars", id, len(got))
+			}
+			seen++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		if seen != 4 {
+			t.Errorf("saw %d rows, want 4", seen)
+		}
+
+		// Pool sanity: the same handle must keep serving correct results.
+		var probe int
+		if err := batchDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&probe); err != nil || probe != 4 {
+			t.Errorf("post-streaming query: count=%d err=%v, want 4/nil", probe, err)
+		}
+	})
+}
+
+// TestIntegration_GeneratedKeysWithLob verifies that a generated-keys frame
+// containing a fetch-on-demand LOB resolves the value correctly (Task 1).
+func TestIntegration_GeneratedKeysWithLob(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
 	}
 
-	// Read back the CLOB.
-	var clobVal string
-	err = db.QueryRowContext(ctx, "SELECT large_clob FROM "+table+" WHERE id = 1").Scan(&clobVal)
+	// Request the DOC column explicitly so the inserted CLOB value is part of
+	// the generated-keys result.
+	cfg, err := ParseDSN(env["JDBC_URL"])
 	if err != nil {
-		t.Fatalf("SELECT CLOB: %v", err)
+		t.Fatalf("ParseDSN: %v", err)
 	}
-	if clobVal != largeStr {
-		t.Errorf("CLOB: got %d chars, want %d", len(clobVal), len(largeStr))
-	}
-	t.Logf("CLOB fetched %d chars via LOB_READ", len(clobVal))
+	MergeCredentials(cfg, env["JDBC_USER"], env["JDBC_PASSWORD"])
+	cfg.GeneratedKeysMode = GeneratedKeysColumnNames
+	cfg.GeneratedKeysColumnNames = []string{"DOC"}
+	cfg.GeneratedKeysModeSet = true
 
-	// Read back the BLOB.
-	var blobVal []byte
-	err = db.QueryRowContext(ctx, "SELECT large_blob FROM "+table+" WHERE id = 2").Scan(&blobVal)
+	db, err := OpenDB(cfg)
 	if err != nil {
-		t.Fatalf("SELECT BLOB: %v", err)
+		t.Fatalf("OpenDB: %v", err)
 	}
-	if !bytes.Equal(blobVal, largeBytes) {
-		t.Errorf("BLOB: got %d bytes, want %d", len(blobVal), len(largeBytes))
+	defer db.Close()
+	ctx := context.Background()
+
+	table := integrationTxTableName("genkeys_lob")
+	_, err = db.ExecContext(ctx, `CREATE TABLE `+table+` (
+		id BIGINT GENERATED BY DEFAULT AS IDENTITY,
+		doc CLOB
+	)`)
+	if err != nil {
+		t.Fatalf("CREATE TABLE: %v", err)
 	}
-	t.Logf("BLOB fetched %d bytes via LOB_READ", len(blobVal))
+	t.Cleanup(func() { _, _ = db.ExecContext(ctx, "DROP TABLE IF EXISTS "+table) })
+
+	// Above the inline threshold: the value arrives as fetch-on-demand.
+	bigDoc := strings.Repeat("Generated DOC ", 80) // 1120 chars
+
+	rawConn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	defer rawConn.Close()
+
+	var h2Res *result
+	err = rawConn.Raw(func(raw any) error {
+		c := raw.(*conn)
+		driverRes, execErr := c.ExecContext(ctx, "INSERT INTO "+table+" (doc) VALUES (?)", []driver.NamedValue{
+			{Ordinal: 1, Value: bigDoc},
+		})
+		if execErr != nil {
+			return execErr
+		}
+		var ok bool
+		h2Res, ok = driverRes.(*result)
+		if !ok {
+			return errors.New("ExecContext did not return *h2go.result")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("INSERT with generated keys: %v", err)
+	}
+
+	gk := h2Res.GeneratedKeys
+	if gk == nil || len(gk.Rows) != 1 {
+		t.Fatalf("generated keys missing or wrong shape: %+v", gk)
+	}
+	if len(gk.Columns) == 0 || gk.Columns[0] != "DOC" {
+		t.Errorf("generated key columns = %v, want [DOC]", gk.Columns)
+	}
+	gotDoc, ok := gk.Rows[0][0].(string)
+	if !ok {
+		t.Fatalf("generated key type = %T, want string", gk.Rows[0][0])
+	}
+	if gotDoc != bigDoc {
+		t.Errorf("generated LOB mismatch: got %d chars, want %d", len(gotDoc), len(bigDoc))
+	}
 }
 
 // TestIntegration_NullDecoding verifies NULL values decode to nil across types.

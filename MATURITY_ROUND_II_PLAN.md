@@ -96,6 +96,38 @@ single-row shape.
 
 **Done when:** all previously failing probe shapes pass; existing suite green.
 
+**Status: DONE** (2026-08-22). Implementation notes:
+- Collector machinery lives in `value_read.go`: `pendingLob` (frame fields +
+  `row`/`col` position), `lobCollector` (`pending`, `reject`, `curRow`,
+  `curCol`), and a `nestedLOBs` sentinel whose `reject` flag propagates through
+  recursive ARRAY/ROW decoding.
+- `Tr.ReadValue` delegates to `readValueInternal(colType, lc)`; `lc == nil`
+  keeps the legacy immediate-fetch behaviour (unit tests, standalone reads).
+  Row readers pass a fresh `lobCollector` per batch/frame and set `curRow`/
+  `curCol` before each column decode so placeholders know their slot.
+- Batch boundary = end of `Rows.fetchRows` (promised flags exhausted or
+  terminator flag 0 seen). Placeholders are stored directly in row buffers and
+  spliced in wire order by re-running the chunk loop (`fetchLob`). Aligned
+  `case -1` H2 error frames skip resolution (rows are discarded anyway).
+- Same pattern in `Session.readGeneratedKeys` after the keys frame is fully
+  consumed (both rowCount > 0 and eager rowCount < 0 paths).
+- Finding 16: BLOB frames carry a single long now named `precision`; CLOB
+  carries `octetLength` + `precision` (char length); verified against
+  `h2-src/org/h2/value/Transfer.java` readValue BLOB/CLOB cases.
+- Nested rejection returns an error wrapping both `ErrUnsupportedType` and the
+  internal `errNestedOnDemandLOB` sentinel; row readers call `Session.Abort()`
+  on it because the partially parsed container leaves batch bytes unconsumed
+  on the wire. Resolution failures abort too (finding 6 partial).
+- Test-writing gotchas for net.Pipe mocks: a zero-length `net.Pipe.Write`
+  blocks forever (skip payload writes for EOF chunks), and every LOB chunk
+  sequence needs a terminating `actualLen == 0` response or the client chunk
+  loop never ends.
+- Tests: `lob_test.go` (6 unit tests incl. two-row/two-LOB batch simulation
+  and abort-on-resolution-failure); integration subtests for all five shapes
+  plus a `Config.FetchSize = 1` dedicated handle crossing every boundary, and
+  `TestIntegration_GeneratedKeysWithLob`. Full matrix green (build, vet,
+  gofmt, lint 0 issues, unit+race, integration+race, CGO-free build).
+
 ---
 
 ## Task 2 — Canonical INTERVAL text formatting (finding 3; retraction bookkeeping for finding 2)

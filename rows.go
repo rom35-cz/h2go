@@ -7,6 +7,7 @@ package h2go
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -310,8 +311,18 @@ func (r *Rows) fetchMoreRows(fetch int) error {
 //   - byte 1: row data follows, read each column value
 //   - byte 0: end of result (no more rows)
 //   - byte -1: exception/error
+//
+// Fetch-on-demand LOBs are collected while the batch is parsed and resolved
+// AFTER the batch boundary (all promised row flags consumed or the end-of-result
+// flag seen). Issuing LOB_READ requests mid-batch would desynchronize the
+// stream: the server services operations sequentially, only after finishing the
+// in-flight sendRows. Resolution failures abort the session so the pool never
+// reuses a connection whose stream can no longer be trusted.
 func (r *Rows) fetchRows(fetch int) error {
-	for i := 0; i < fetch; i++ {
+	lc := &lobCollector{}
+
+	boundary := false
+	for i := 0; i < fetch && !boundary; i++ {
 		rowFlag, err := r.session.tr.ReadByte()
 		if err != nil {
 			return fmt.Errorf("h2go: fetchRows: failed to read row flag: %w", err)
@@ -326,8 +337,14 @@ func (r *Rows) fetchRows(fetch int) error {
 				if colType == nil {
 					return fmt.Errorf("h2go: fetchRows: column %d metadata not found", j)
 				}
-				value, err := r.session.tr.ReadValue(colType.TypeInfo)
+				lc.curRow, lc.curCol = len(r.bufferedRows), j
+				value, err := r.session.tr.readValueInternal(colType.TypeInfo, lc)
 				if err != nil {
+					if errors.Is(err, errNestedOnDemandLOB) {
+						// The ARRAY/ROW container was only partially consumed;
+						// the remaining batch bytes stay unread on the wire.
+						_ = r.session.Abort()
+					}
 					return fmt.Errorf("h2go: fetchRows: failed to read column %d: %w", j, err)
 				}
 				row[j] = value
@@ -338,15 +355,31 @@ func (r *Rows) fetchRows(fetch int) error {
 			// End of result — server has already closed the result set.
 			// Record this so Next() does not send another RESULT_FETCH_ROWS.
 			r.noMoreRows = true
-			return nil
+			boundary = true
 
 		case -1:
-			// Exception
+			// Exception frame is fully consumed by readH2Error, leaving the
+			// stream aligned; buffered rows are discarded via the sticky error,
+			// so no deferred LOBs need resolving.
 			return readH2Error(r.session.tr)
 
 		default:
 			return fmt.Errorf("h2go: fetchRows: unexpected row flag %d", rowFlag)
 		}
+	}
+
+	// Batch boundary reached: resolve any deferred fetch-on-demand LOBs while
+	// the server has no in-flight batch, then splice the values into place.
+	for _, p := range lc.pending {
+		v, err := r.session.tr.fetchLob(p)
+		if err != nil {
+			// The session's stream state can no longer be trusted for this
+			// operation; abort so ResetSession fails and database/sql
+			// discards the connection instead of reusing it.
+			_ = r.session.Abort()
+			return fmt.Errorf("h2go: fetchRows: failed to resolve deferred LOB (row %d column %d): %w", p.row, p.col, err)
+		}
+		r.bufferedRows[p.row][p.col] = v
 	}
 
 	return nil
