@@ -2,7 +2,6 @@ package h2go
 
 import (
 	"database/sql/driver"
-	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -50,21 +49,26 @@ func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 
 	columnCount, err := s.tr.ReadInt32()
 	if err != nil {
+		s.markStreamBroken()
 		return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: failed to read column count: %w", err)
 	}
 	rowCount, err := s.tr.ReadRowCount()
 	if err != nil {
+		s.markStreamBroken()
 		return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: failed to read row count: %w", err)
 	}
 	// DoS guard, applied before any further parsing or allocation: rowCount
 	// arrives as an int64 from the wire and must not drive a giant
 	// pre-allocation. Compared as int64 — no int conversion precedes it.
+	// This is a local validation on fully consumed fields: the stream stays
+	// aligned, so the session is NOT marked broken here.
 	if rowCount > maxWireCollectionElements {
 		return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: row count %d exceeds cap %d", rowCount, maxWireCollectionElements)
 	}
 
 	meta, err := s.tr.ReadResultMeta(columnCount, s.version)
 	if err != nil {
+		s.markStreamBroken()
 		return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: failed to read metadata: %w", err)
 	}
 
@@ -85,13 +89,11 @@ func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 			row, err := s.readGeneratedKeyRow(meta, lc)
 			if err != nil {
 				// ioEOF means the server signalled end-of-result early
-				// (fewer rows than advertised). Stop reading.
+				// (fewer rows than advertised). Aligned; stop reading.
 				if _, ok := err.(ioEOF); ok {
 					break
 				}
-				if errors.Is(err, errNestedOnDemandLOB) {
-					_ = s.Abort()
-				}
+				s.markUnlessAlignedH2Error(err)
 				return nil, 0, err
 			}
 			result.Rows = append(result.Rows, row)
@@ -105,9 +107,7 @@ func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 				if _, ok := err.(ioEOF); ok {
 					break
 				}
-				if errors.Is(err, errNestedOnDemandLOB) {
-					_ = s.Abort()
-				}
+				s.markUnlessAlignedH2Error(err)
 				return nil, 0, err
 			}
 			result.Rows = append(result.Rows, row)
@@ -119,7 +119,7 @@ func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 	for _, p := range lc.pending {
 		v, err := s.tr.fetchLob(p)
 		if err != nil {
-			_ = s.Abort()
+			s.markStreamBroken()
 			return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: failed to resolve deferred LOB (row %d column %d): %w", p.row, p.col, err)
 		}
 		result.Rows[p.row][p.col] = v

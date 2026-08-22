@@ -92,6 +92,35 @@ func (s *Session) Abort() error {
 	return tr.Abort()
 }
 
+// markStreamBroken records that the transfer stream can no longer be trusted
+// — a mid-frame parse failure, a partially written operation, or a transport
+// timeout left unread bytes or an unusable pipe — and aborts the transport.
+// ResetSession/acquire then report driver.ErrBadConn, so database/sql
+// discards the connection instead of reusing one whose stream position is
+// unknown. Behaviourally identical to Abort; named for intent at row-reader
+// call sites.
+func (s *Session) markStreamBroken() {
+	if s == nil {
+		return
+	}
+	_ = s.Abort()
+}
+
+// markUnlessAlignedH2Error marks the stream broken unless err is a fully
+// parsed server-side H2 error (*Error). An H2 error frame is consumed
+// completely by readH2Error, leaving the stream aligned: per H2 semantics a
+// server-side SQL error ends the current result, not the session. Anything
+// else (EOF, timeout, truncated frame) means the stream position is unknown.
+func (s *Session) markUnlessAlignedH2Error(err error) {
+	if s == nil || err == nil {
+		return
+	}
+	var he *Error
+	if !errors.As(err, &he) {
+		s.markStreamBroken()
+	}
+}
+
 // cancelStatement uses H2's side-channel cancellation protocol to ask the
 // server to stop a running statement identified by statementID.
 func (s *Session) cancelStatement(statementID int32) error {

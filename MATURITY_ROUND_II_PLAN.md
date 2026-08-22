@@ -436,6 +436,48 @@ fails later); make it deterministic and immediate.
 **Done when:** unit tests green; full integration suite green; no path returns
 a desynced conn to the pool.
 
+**Status: DONE** (2026-08-22). Implementation notes:
+- Two new Session helpers carry the rule: `markStreamBroken()` (intent-named
+  `Abort`) and `markUnlessAlignedH2Error(err)` — an error is "aligned" iff it
+  is a fully parsed `*h2go.Error` (`errors.As`), because `readH2Error` then
+  has consumed the entire exception frame. Everything else (EOF, timeout,
+  truncated frame, unknown flag) means the stream position is unknown.
+- Discard coverage now spans the whole result-read lifecycle:
+  - `NewRows`: row-count / metadata parse failures;
+  - `fetchMoreRows`: named-return + defer marks on ANY failure except aligned
+    H2 errors — including partially written requests. This closes a real
+    pre-existing hole: a context timeout during row streaming (the deadline
+    watcher fires the transport deadline mid-response) used to return the
+    conn to the pool with an unread partial batch in flight;
+  - `fetchRows`: row-flag read failure, missing column metadata, ALL column
+    parse failures (blanket rule — subsumes Task 1's special-cased nested-LOB
+    rejection), unexpected flags; aligned `case -1` frames stay alive;
+  - generated-keys path mirrors all of it; the Task 4 rowCount cap guard
+    deliberately does NOT mark (its fields are fully consumed, stream still
+    aligned), and `ioEOF` early-stop stays aligned by definition.
+- `Rows.Close` additionally checks `session.dead.Load()` before writing
+  RESULT_CLOSE/COMMAND_CLOSE (belt-and-braces on top of the existing
+  `tr != nil` guard that Abort already provides).
+- `conn.go` required no changes: `acquire`/`ResetSession` already report
+  `driver.ErrBadConn` for dead sessions — pinned by
+  `TestResetSessionRejectsDeadSession`.
+- Over-marking is deliberate where semantics are unknown (e.g. `unexpected
+  status code`): discarding a possibly-fine conn is safe; reusing a broken
+  one is not. Aligned server-side SQL errors keep the session usable,
+  matching H2 semantics.
+- The integration criterion (pool keeps serving after a fixed multi-column
+  LOB stream) was already asserted by Task 1's "fetch size one crosses every
+  boundary" subtest's post-streaming `COUNT(*)` probe; no new integration
+  test needed.
+- Mock-authoring gotcha recorded: net.Pipe is synchronous — the mock must
+  consume the RESULT_FETCH_ROWS request (12 bytes) before its response can
+  flush, and sendRows responses begin with STATUS_OK before any row bytes.
+- Tests: six unit tests in `stream_discard_test.go` (mid-column failure with
+  sticky Next + write-free Close, transport failure, aligned frame survival
+  for both result and generated-keys paths, ResetSession rejection).
+- Validation: build, vet (both tags), gofmt, lint 0 issues (both tags),
+  unit+race, integration+race against live H2, CGO-free build — all green.
+
 ---
 
 ## Task 6 — Document parsed-but-ignored DSN/JDBC parameters (finding 7)

@@ -7,7 +7,6 @@ package h2go
 import (
 	"context"
 	"database/sql/driver"
-	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -91,6 +90,7 @@ func NewRows(session *Session, resultID int32, columnCount int32, fetchSize int,
 	// Read row count
 	rowCount, err := session.tr.ReadRowCount()
 	if err != nil {
+		session.markStreamBroken()
 		return nil, fmt.Errorf("h2go: NewRows: failed to read row count: %w", err)
 	}
 	r.rowCount = rowCount
@@ -98,6 +98,7 @@ func NewRows(session *Session, resultID int32, columnCount int32, fetchSize int,
 	// Read column metadata
 	meta, err := session.tr.ReadResultMeta(columnCount, TCPProtocolVersion21)
 	if err != nil {
+		session.markStreamBroken()
 		return nil, fmt.Errorf("h2go: NewRows: failed to read column metadata: %w", err)
 	}
 	r.columns = meta
@@ -154,15 +155,17 @@ func (r *Rows) Close() error {
 
 	var closeErr error
 
-	// Close the result on the server
-	if r.session != nil && r.session.tr != nil {
+	// Close the result on the server, but never write on a dead session:
+	// markStreamBroken/Abort have already closed (or nilled) the transport and
+	// any remaining bytes in flight are meaningless.
+	if r.session != nil && r.session.tr != nil && !r.session.dead.Load() {
 		if err := r.sendResultClose(); err != nil {
 			closeErr = err
 		}
 	}
 
 	// If we own the command, close it too (for ad-hoc queries)
-	if r.ownsCommand && r.commandID != 0 && r.session != nil && r.session.tr != nil {
+	if r.ownsCommand && r.commandID != 0 && r.session != nil && r.session.tr != nil && !r.session.dead.Load() {
 		if err := r.sendCommandClose(); err != nil && closeErr == nil {
 			closeErr = err
 		}
@@ -278,31 +281,43 @@ func (r *Rows) Next(dest []driver.Value) error {
 }
 
 // fetchMoreRows sends RESULT_FETCH_ROWS and reads the rows.
-func (r *Rows) fetchMoreRows(fetch int) error {
+// Any failure here leaves the request partially written or the response
+// partially unconsumed, so the session is marked broken before returning;
+// database/sql then discards the connection at the next reset.
+func (r *Rows) fetchMoreRows(fetch int) (err error) {
 	if r.session == nil || r.session.tr == nil {
 		return driver.ErrBadConn
 	}
+	defer func() {
+		if err != nil && r.session != nil {
+			// Aligned, fully parsed server-side H2 errors keep the session
+			// alive; every other failure leaves the stream untrustworthy.
+			r.session.markUnlessAlignedH2Error(err)
+		}
+	}()
 
 	// Send RESULT_FETCH_ROWS
-	if err := r.session.tr.WriteInt32(ResultFetchRows); err != nil {
+	if err = r.session.tr.WriteInt32(ResultFetchRows); err != nil {
 		return fmt.Errorf("h2go: Rows.fetchMoreRows: failed to write op: %w", err)
 	}
-	if err := r.session.tr.WriteInt32(r.resultID); err != nil {
+	if err = r.session.tr.WriteInt32(r.resultID); err != nil {
 		return fmt.Errorf("h2go: Rows.fetchMoreRows: failed to write result id: %w", err)
 	}
-	if err := r.session.tr.WriteInt32(int32(fetch)); err != nil {
+	if err = r.session.tr.WriteInt32(int32(fetch)); err != nil {
 		return fmt.Errorf("h2go: Rows.fetchMoreRows: failed to write fetch size: %w", err)
 	}
-	if err := r.session.tr.Flush(); err != nil {
+	if err = r.session.tr.Flush(); err != nil {
 		return fmt.Errorf("h2go: Rows.fetchMoreRows: flush failed: %w", err)
 	}
 
 	// Server responds: writeInt(STATUS_OK) then row bytes (sendRows).
-	if err := readStatus(r.session.tr); err != nil {
+	if err = readStatus(r.session.tr); err != nil {
 		return wrapError("Rows.fetchMoreRows", err)
 	}
 
-	// Read the rows
+	// Read the rows. fetchRows applies its own, finer-grained discard rules
+	// (aligned H2 error frames keep the session alive); if it succeeded there
+	// is nothing to discard here.
 	return r.fetchRows(fetch)
 }
 
@@ -316,8 +331,12 @@ func (r *Rows) fetchMoreRows(fetch int) error {
 // AFTER the batch boundary (all promised row flags consumed or the end-of-result
 // flag seen). Issuing LOB_READ requests mid-batch would desynchronize the
 // stream: the server services operations sequentially, only after finishing the
-// in-flight sendRows. Resolution failures abort the session so the pool never
-// reuses a connection whose stream can no longer be trusted.
+// in-flight sendRows.
+//
+// Session-discard rule (finding 6): every failure except an aligned
+// end-of-result flag or a fully parsed H2 error frame leaves the stream
+// position unknown; the session is marked broken BEFORE the sticky error is
+// returned so database/sql discards the connection instead of reusing it.
 func (r *Rows) fetchRows(fetch int) error {
 	lc := &lobCollector{}
 
@@ -325,6 +344,7 @@ func (r *Rows) fetchRows(fetch int) error {
 	for i := 0; i < fetch && !boundary; i++ {
 		rowFlag, err := r.session.tr.ReadByte()
 		if err != nil {
+			r.session.markStreamBroken()
 			return fmt.Errorf("h2go: fetchRows: failed to read row flag: %w", err)
 		}
 
@@ -335,16 +355,15 @@ func (r *Rows) fetchRows(fetch int) error {
 			for j := 0; j < int(r.columnCount); j++ {
 				colType := r.columns.GetColumn(j)
 				if colType == nil {
+					r.session.markStreamBroken()
 					return fmt.Errorf("h2go: fetchRows: column %d metadata not found", j)
 				}
 				lc.curRow, lc.curCol = len(r.bufferedRows), j
 				value, err := r.session.tr.readValueInternal(colType.TypeInfo, lc)
 				if err != nil {
-					if errors.Is(err, errNestedOnDemandLOB) {
-						// The ARRAY/ROW container was only partially consumed;
-						// the remaining batch bytes stay unread on the wire.
-						_ = r.session.Abort()
-					}
+					// Includes nested on-demand LOB rejection: the partially
+					// parsed container leaves batch bytes unconsumed.
+					r.session.markStreamBroken()
 					return fmt.Errorf("h2go: fetchRows: failed to read column %d: %w", j, err)
 				}
 				row[j] = value
@@ -358,12 +377,15 @@ func (r *Rows) fetchRows(fetch int) error {
 			boundary = true
 
 		case -1:
-			// Exception frame is fully consumed by readH2Error, leaving the
-			// stream aligned; buffered rows are discarded via the sticky error,
-			// so no deferred LOBs need resolving.
-			return readH2Error(r.session.tr)
+			// Exception frame: readH2Error consumes it completely. A parsed
+			// server-side SQL error leaves the stream aligned and the session
+			// usable; a parse failure inside the error frame does not.
+			h2Err := readH2Error(r.session.tr)
+			r.session.markUnlessAlignedH2Error(h2Err)
+			return h2Err
 
 		default:
+			r.session.markStreamBroken()
 			return fmt.Errorf("h2go: fetchRows: unexpected row flag %d", rowFlag)
 		}
 	}
