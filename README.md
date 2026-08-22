@@ -122,8 +122,28 @@ Current scope intentionally excludes:
 - TLS/SSL transport
 - multiple result sets
 - exact-decimal helper APIs beyond string-based `NUMERIC`
-- extended generated-key APIs beyond the MVP `LastInsertId()` path
-  (accessible via `GeneratedKeysResult` on the driver's `Result` type)
+- extended generated-key APIs beyond the `LastInsertId()` path: the full
+  multi-column / multi-row keys are reachable only at the driver level,
+  because `database/sql` wraps results (a plain `sql.Result` cannot be
+  asserted):
+
+  ```go
+  sqlConn, _ := db.Conn(ctx)
+  defer sqlConn.Close()
+  var keys *h2go.GeneratedKeysResult
+  _ = sqlConn.Raw(func(raw any) error {
+      c := raw.(driver.Conn) // *h2go.conn, implements driver.ExecerContext
+      res, err := c.(driver.ExecerContext).ExecContext(ctx,
+          "INSERT INTO t(x) VALUES (1)", nil)
+      if err != nil {
+          return err
+      }
+      if gkp, ok := res.(h2go.GeneratedKeysProvider); ok {
+          keys = gkp.GetGeneratedKeys()
+      }
+      return nil
+  })
+  ```
 
 These are tracked as post-MVP enhancements in the implementation plan.
 

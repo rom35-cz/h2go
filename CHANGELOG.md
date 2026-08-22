@@ -33,10 +33,13 @@ Post-MVP maturity fixes from the `MATURITY_MVP.md` review.
   generated keys are requested and in which mode (auto, none, column numbers,
   column names). `Config.GeneratedKeysColumns` and
   `Config.GeneratedKeysColumnNames` specify the target columns.
-- `GeneratedKeysResult` type with `Rows` and `Columns` fields, accessible
-  via the `GenerateKeys` field on the driver's `Result` type. Provides
+- `GeneratedKeysResult` type with `Rows` and `Columns` fields. Provides
   multi-column and multi-row generated key access beyond the single
   `LastInsertId()` path.
+- `GeneratedKeysProvider` interface: assert the driver-level `driver.Result`
+  obtained via `sql.Conn.Raw()` to reach `GetGeneratedKeys()` from outside the
+  package. A `sql.Result` returned by `db.Exec` intentionally does not expose
+  it (`database/sql` wraps driver results in its own type).
 - `GeneratedKeysResult.SingleInt64()`: convenience method equivalent to
   `LastInsertId()`.
 - `TestIntegration_TypeShowcaseFullSelect`: full supported-type matrix

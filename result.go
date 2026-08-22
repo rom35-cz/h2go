@@ -50,7 +50,48 @@ func (r *result) RowsAffected() (int64, error) {
 	return r.affected, nil
 }
 
+// GetGeneratedKeys returns the full generated-keys result carried by this
+// result, or nil when no keys were requested or none were returned.
+//
+// GetGeneratedKeys makes *result satisfy GeneratedKeysProvider.
+func (r *result) GetGeneratedKeys() *GeneratedKeysResult {
+	if r == nil {
+		return nil
+	}
+	return r.GeneratedKeys
+}
+
+// GeneratedKeysProvider is implemented by the driver.Result values h2go
+// returns when generated keys were requested. It exposes the full
+// multi-column / multi-row key result beyond the single-value LastInsertId.
+//
+// # Reachability
+//
+// database/sql wraps every driver result in its own unexported type before
+// returning it as a sql.Result, so a result from db.Exec or
+// DB.ExecContext can NOT be asserted to this interface. Obtain the
+// driver-level result through sql.Conn.Raw instead:
+//
+//	sqlConn, _ := db.Conn(ctx)
+//	defer sqlConn.Close()
+//	_ = sqlConn.Raw(func(raw any) error {
+//		c := raw.(driver.Conn) // *h2go.conn, implements driver.ExecerContext
+//		res, err := c.(driver.ExecerContext).ExecContext(ctx,
+//			"INSERT INTO t(x) VALUES (1)", nil)
+//		if err != nil {
+//			return err
+//		}
+//		if gkp, ok := res.(h2go.GeneratedKeysProvider); ok {
+//			keys = gkp.GetGeneratedKeys()
+//		}
+//		return nil
+//	})
+type GeneratedKeysProvider interface {
+	GetGeneratedKeys() *GeneratedKeysResult
+}
+
 // Verify interface compliance at compile time.
 var (
-	_ driver.Result = (*result)(nil)
+	_ driver.Result         = (*result)(nil)
+	_ GeneratedKeysProvider = (*result)(nil)
 )

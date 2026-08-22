@@ -288,6 +288,31 @@ interface (database/sql wraps results); CHANGELOG wording corrected (drop
 
 **Done when:** external-package test passes; docs snippet compiles.
 
+**Status: DONE** (2026-08-22). Implementation notes:
+- `result.go` now defines `GeneratedKeysProvider` and the `(*result).
+  GetGeneratedKeys` accessor; interface-compliance assertion lives in the
+  same `var _` block as the driver.Result one. The godoc comment carries the
+  full working `sql.Conn.Raw()` pattern so the exported docs are self-teaching.
+- No wiring changes were required: both `conn.ExecContext` and
+  `stmt.ExecContext` already populated `result.GeneratedKeys`; only the
+  exported surface was missing.
+- `generated_keys_external_test.go` (`package h2go_test`, build tag
+  `integration`) proves reachability strictly through the public API:
+  driver-level result implements the provider, `GetGeneratedKeys` returns the
+  key column/value, a `sql.Result` from `db.Exec` does NOT implement it
+  (asserts the database/sql wrapping behaviour so doc drift fails loudly),
+  and `LastInsertId` keeps working unchanged.
+- Because the new file only compiles under `-tags=integration`, lint runs for
+  this repo should include `golangci-lint run --build-tags integration ./...`
+  (both variants are clean).
+- README "Limitations" bullet replaced with the compilable Raw()-based
+  snippet plus the explicit warning about db.Exec wrapping; CHANGELOG Added
+  entry corrected (also fixes its pre-existing `GenerateKeys` field-name typo
+  — the real field is `GeneratedKeys`).
+- Validation: build, vet (default + integration tags), gofmt, lint (0 issues,
+  both tags), unit+race, integration+race (external test passes against live
+  H2), CGO-free build — all green.
+
 ---
 
 ## Task 4 — Wire-length caps for collection/value decoders (findings 5, 17)
