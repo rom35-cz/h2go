@@ -2,6 +2,7 @@ package h2go
 
 import (
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -130,20 +131,6 @@ func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 	return result, lastInsertID, idErr
 }
 
-// readGeneratedKeysLastInsertID consumes the generated-keys result set that
-// follows an update response and, when possible, extracts a single numeric key
-// suitable for driver.Result.LastInsertId().
-//
-// Deprecated: Use readGeneratedKeys instead, which returns both the full
-// result and the single numeric key.
-func (s *Session) readGeneratedKeysLastInsertID() (int64, error) {
-	_, id, err := s.readGeneratedKeys()
-	if err != nil && !isLastInsertIDUnavailable(err) {
-		return 0, err
-	}
-	return id, nil
-}
-
 func (s *Session) readGeneratedKeyRow(meta *ResultMeta, lc *lobCollector) ([]driver.Value, error) {
 	rowFlag, err := s.tr.ReadByte()
 	if err != nil {
@@ -175,50 +162,6 @@ func (s *Session) readGeneratedKeyRow(meta *ResultMeta, lc *lobCollector) ([]dri
 	}
 }
 
-func (s *Session) discardGeneratedKeyRows(meta *ResultMeta, rowCount int64) error {
-	if rowCount <= 0 {
-		return nil
-	}
-	readRow := func() error {
-		rowFlag, err := s.tr.ReadByte()
-		if err != nil {
-			return fmt.Errorf("h2go: discardGeneratedKeyRows: failed to read row flag: %w", err)
-		}
-
-		switch int8(rowFlag) {
-		case 1:
-			for i := 0; i < int(meta.ColumnCount); i++ {
-				col := meta.GetColumn(i)
-				if col == nil {
-					return fmt.Errorf("h2go: discardGeneratedKeyRows: missing metadata for column %d", i)
-				}
-				if _, err := s.tr.ReadValue(col.TypeInfo); err != nil {
-					return fmt.Errorf("h2go: discardGeneratedKeyRows: failed to read column %d: %w", i, err)
-				}
-			}
-			return nil
-		case 0:
-			return ioEOF{}
-		case -1:
-			return wrapError("discardGeneratedKeyRows", readH2Error(s.tr))
-		default:
-			return fmt.Errorf("h2go: discardGeneratedKeyRows: unexpected row flag %d", rowFlag)
-		}
-	}
-
-	for i := int64(0); i < rowCount; i++ {
-		err := readRow()
-		if err == nil {
-			continue
-		}
-		if _, ok := err.(ioEOF); ok {
-			return nil
-		}
-		return err
-	}
-	return nil
-}
-
 // ioEOF is a sentinel internal error used to short-circuit result draining when
 // the server sends the end-of-result marker.
 type ioEOF struct{}
@@ -232,8 +175,11 @@ func lastInsertIDUnavailableError(format string, args ...any) error {
 	return fmt.Errorf("h2go: LastInsertId: "+format+": %w", append(args, ErrLastInsertIDUnavailable)...)
 }
 
+// isLastInsertIDUnavailable reports whether err (or anything it wraps)
+// carries ErrLastInsertIDUnavailable. Kept as a named helper so call sites
+// read as intent rather than mechanism.
 func isLastInsertIDUnavailable(err error) bool {
-	return err != nil && strings.Contains(err.Error(), ErrLastInsertIDUnavailable.Error())
+	return errors.Is(err, ErrLastInsertIDUnavailable)
 }
 
 func generatedKeyValueToInt64(v driver.Value) (int64, error) {

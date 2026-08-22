@@ -135,7 +135,7 @@ func HandshakeContext(ctx context.Context, cfg *Config) (sess *Session, err erro
 		err = fmt.Errorf("h2go: write session id: %w", e)
 		return nil, err
 	}
-	if e := tr.WriteString(localTimeZoneID()); e != nil {
+	if e := tr.WriteString(localTimeZoneID(cfg)); e != nil {
 		err = fmt.Errorf("h2go: write timezone id: %w", e)
 		return nil, err
 	}
@@ -219,16 +219,29 @@ func generateSessionID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// localTimeZoneID returns the system's local timezone identifier used during
-// the SESSION_SET_ID handshake step (required for protocol 20+).
-// It checks the TZ environment variable first, then the Go runtime's local
-// timezone name, and ultimately falls back to "UTC".
-func localTimeZoneID() string {
+// localTimeZoneID returns the timezone identifier sent to the server during
+// the SESSION_SET_ID handshake step (required for protocol 20+) so it renders
+// TIMESTAMP WITH TIME ZONE values in local time.
+//
+// The candidate (TZ environment variable, else the system zone name) is
+// validated with time.LoadLocation: an unparseable value would otherwise be
+// sent verbatim and leave the server unable to resolve it, so it falls back to
+// "UTC" with a debug log.
+func localTimeZoneID(cfg *Config) string {
+	candidate := ""
 	if tz := os.Getenv("TZ"); tz != "" {
-		return tz
+		candidate = tz
+	} else if name := time.Local.String(); name != "Local" {
+		candidate = name
 	}
-	if name := time.Local.String(); name != "Local" {
-		return name
+	if candidate == "" {
+		return "UTC"
 	}
-	return "UTC"
+	if _, err := time.LoadLocation(candidate); err != nil {
+		logConfig(cfg, slog.LevelDebug,
+			"unparseable local timezone, falling back to UTC",
+			slog.String("candidate", candidate), slog.Any("error", err))
+		return "UTC"
+	}
+	return candidate
 }

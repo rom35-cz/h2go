@@ -1,4 +1,4 @@
-.PHONY: build vet lint test test-race test-integration test-integration-race db-seed clean
+.PHONY: build vet lint fmt fmt-check test test-race test-integration test-integration-race db-seed clean
 
 build:
 	go build ./...
@@ -6,12 +6,22 @@ build:
 vet:
 	go vet ./...
 
+# Requires golangci-lint (https://golangci-lint.run); silently skipped when
+# the binary is not on PATH. Run with --build-tags integration for full cover.
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 		golangci-lint run ./...; \
 	else \
 		echo "golangci-lint not installed; skipping lint"; \
 	fi
+
+# fmt-check fails when any tracked Go file is not gofmt-formatted; fmt rewrites
+# in place.
+fmt:
+	gofmt -w .
+
+fmt-check:
+	@files="$$(gofmt -l .)"; if [ -n "$$files" ]; then echo "gofmt needed:"; echo "$$files"; exit 1; fi
 
 test:
 	go test ./...

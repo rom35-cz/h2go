@@ -155,11 +155,13 @@ The driver focuses on the MVP scalar set used by the test suite:
 | `CHAR`, `VARCHAR` | `string` | Text values |
 | `CLOB` | `string` | Inline CLOBs (≤ `MAX_LENGTH_INPLACE_LOB`); larger CLOBs fetched on demand via `LOB_READ` |
 | `BINARY`, `VARBINARY`, `BLOB` | `[]byte` | Raw bytes; inline BLOBs only, larger BLOBs fetched on demand via `LOB_READ` |
-| `JSON`, `GEOMETRY`, `JAVA_OBJECT` | `[]byte` | Raw bytes |
+| `JSON`, `GEOMETRY`, `JAVA_OBJECT` | `[]byte` | Raw bytes exactly as H2 serializes them (H2's own text rendering of JSON includes outer double quotes) |
 | `ENUM` | `int64` | Ordinal value |
 | `INTERVAL` | `string` | Decoded as H2's canonical interval text |
-| `ARRAY`, `ROW` | `string` | Text representation |
+| `ARRAY`, `ROW` | `string` | Elements/fields rendered with `%v`, comma-joined inside `[...]` / `(...)`; NULL elements render as `<nil>` |
 | `NULL` | `nil` | Preserved as database null |
+
+ENUM *parameters* are sent as VARCHAR and coerced by the server on arrival.
 
 Unsupported H2 types return a clear error or a documented fallback value.
 

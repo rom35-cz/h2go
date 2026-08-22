@@ -483,3 +483,39 @@ func TestSendCredentials_WireFormat(t *testing.T) {
 		t.Errorf("nProps = %d, want 0", nProps)
 	}
 }
+
+// TestLocalTimeZoneIDValidation verifies finding 18: the candidate timezone
+// identifier is validated with time.LoadLocation, and an unparseable TZ falls
+// back to "UTC" instead of being sent verbatim to the server.
+func TestLocalTimeZoneIDValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		tz      string
+		want    string
+		wantAny bool // accept any loadable zone (result depends on system local)
+	}{
+		{"valid zone passes through", "America/New_York", "America/New_York", false},
+		{"garbage zone falls back to UTC", "Not/AZone", "UTC", false},
+		{"valid numeric-style zone name", "Etc/UTC", "Etc/UTC", false},
+		{"empty TZ follows system local (always loadable)", "", "", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TZ", tc.tz)
+			got := localTimeZoneID(nil)
+			if tc.wantAny {
+				if _, err := time.LoadLocation(got); err != nil {
+					t.Errorf("localTimeZoneID = %q is not loadable: %v", got, err)
+				}
+				return
+			}
+			if got != tc.want {
+				t.Errorf("localTimeZoneID with TZ=%q = %q, want %q", tc.tz, got, tc.want)
+			}
+			if _, err := time.LoadLocation(got); err != nil {
+				t.Errorf("returned zone %q is not loadable by the Go runtime: %v", got, err)
+			}
+		})
+	}
+}

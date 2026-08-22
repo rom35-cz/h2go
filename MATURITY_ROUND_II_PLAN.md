@@ -664,6 +664,42 @@ Round II failure shapes (see audit) are each covered by a named test.
 **Done when:** `gofmt -l` clean; no dead exported-on-unexported symbols added;
 unit suite green; docs updated.
 
+**Status: DONE** (2026-08-22). Implementation notes:
+- **Finding 11**: `isLastInsertIDUnavailable` is now a thin `errors.Is(err,
+  ErrLastInsertIDUnavailable)` wrapper (was `strings.Contains` on the error
+  text); kept as a named helper for call-site readability. All construction
+  sites already wrap via `%w` through `lastInsertIDUnavailableError`.
+- **Finding 12**: deleted the zero-caller `Session.readGeneratedKeysLastInsertID`
+  and `Session.discardGeneratedKeyRows` (grep re-verified after Tasks 1–5;
+  no test referenced either).
+- **Makefile**: added `fmt` (rewrite) and `fmt-check` (fails listing files
+  needing gofmt) targets; lint target comment now notes it requires
+  golangci-lint and suggests `--build-tags integration` for full cover.
+  First edit accidentally split the lint shell recipe — repaired and verified
+  both targets run (`make lint` → 0 issues, `make fmt-check` → clean).
+- **Finding 10** (README): ARRAY/ROW row documents exact rendering — `%v`
+  elements comma-joined inside `[...]` / `(...)`, NULL elements as `<nil>`
+  (contract pinned by Task 8's assertion).
+- **Finding 13** (README): JSON/GEO/OBJ bytes are exactly what H2 serializes;
+  H2's own JSON text rendering includes outer double quotes.
+- **Finding 14** (README): ENUM parameters are sent as VARCHAR and coerced by
+  the server — one-line footnote under the supported-types table.
+- **Finding 15**: `readClobChar` doc explains lone-surrogate handling (H2
+  writes UTF-16 code units; Go strings cannot carry lone surrogates;
+  `WriteRune` maps them to U+FFFD). The optional debug log was skipped:
+  `Tr` deliberately carries no logger reference, and threading one into the
+  value codec would expand scope beyond this task.
+- **Finding 18**: `localTimeZoneID(cfg)` validates its candidate (TZ env var,
+  else system zone name) with `time.LoadLocation`; unparseable values fall
+  back to "UTC" with a debug log instead of being sent verbatim to the server
+  (a real behavior improvement — previously garbage TZ reached the wire).
+  Signature gained `cfg` solely for logging. Test caveat recorded:
+  `time.Local` is frozen at process init, so `t.Setenv("TZ", ...)` only drives
+  the getenv branch of the logic — the empty-TZ case asserts "result is
+  loadable" rather than an exact zone.
+- Validation: `make fmt-check`, `make lint`, build, vet (both tags),
+  unit+race, integration+race against live H2, CGO-free build — all green.
+
 ---
 
 ## Task 10 — Final validation, changelog, acceptance docs (Round II closure)

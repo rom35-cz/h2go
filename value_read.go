@@ -757,6 +757,13 @@ func (tr *Tr) readInlineClob(length int64) (driver.Value, error) {
 }
 
 // readClobChar reads one character using the DataReader.readChar encoding.
+//
+// H2 writes UTF-16 code units, so a Java string may legally contain a LONE
+// SURROGATE — valid in Java, but not a standalone Unicode code point. Go
+// strings cannot carry lone surrogates: strings.Builder.WriteRune maps such a
+// value to U+FFFD (utf8.RuneError) during inline-CLOB decoding. For malformed
+// input the decoded text therefore differs from H2's char semantics by that
+// mandated substitution; no other corruption occurs.
 func (tr *Tr) readClobChar() (rune, error) {
 	x, err := tr.ReadByte()
 	if err != nil {
