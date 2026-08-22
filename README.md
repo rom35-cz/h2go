@@ -90,6 +90,31 @@ db, err := h2go.OpenDB(cfg)
 
 Default TCP port: `9092`.
 
+## DSN parameters
+
+The parser accepts JDBC-style semicolon parameters
+(`jdbc:h2:tcp://localhost:9092/mydb;IFEXISTS=TRUE`) and native URL query
+parameters (`h2://localhost:9092/mydb?IFEXISTS=TRUE`). Of these:
+
+- `USER` and `PASSWORD` are consumed — extracted into `Config.User` /
+  `Config.Password` (never stored in `Params`).
+- everything else lands in `Config.Params` and is currently **parsed but not
+  applied**: the driver neither forwards these parameters to the server nor
+  enforces them locally.
+
+Risky examples of silently ignored parameters:
+
+- `IFEXISTS=TRUE` — the connection still succeeds when the database does not
+  exist (the server auto-creates it) because the flag is never enforced.
+- `ACCESS_MODE_DATA=r` — read-only access mode is not requested.
+- `AUTO_SERVER=TRUE`, file-lock settings, `TRACE_LEVEL_*`, ... — ignored.
+
+If your deployment depends on any of these, validate them manually before
+connecting (for example, check that the database file exists yourself). When
+`Config.Logger` is configured at debug level, each new connection logs one
+record naming which parameter keys were parsed but not applied — keys only;
+parameter values are never logged.
+
 ## Supported types
 
 The driver focuses on the MVP scalar set used by the test suite:

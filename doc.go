@@ -48,6 +48,16 @@
 // The default TCP port is 9092 if omitted. Diagnostic logging is optional and
 // disabled unless a logger is explicitly provided in Config.Logger.
 //
+// # DSN parameters
+//
+// Of the DSN parameters, only USER and PASSWORD are consumed (extracted into
+// Config). Everything else — JDBC ;KEY=VAL segments and native ?k=v pairs,
+// e.g. IFEXISTS, ACCESS_MODE_DATA, AUTO_SERVER — is parsed into Config.Params
+// but not applied: the driver neither forwards it to the server nor enforces
+// it locally. Validate such settings manually before connecting. With
+// Config.Logger at debug level, each connection logs the ignored keys (never
+// their values).
+//
 // # Result options
 //
 // Config.MaxRows bounds the server-side size of each result set (forwarded as

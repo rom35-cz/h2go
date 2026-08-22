@@ -504,6 +504,32 @@ debug log appears with keys only when a logger is configured.
 
 **Done when:** docs committed; `make lint`-clean; suite green.
 
+**Status: DONE** (2026-08-22). Implementation notes:
+- `connector.go`: new `logIgnoredParams(cfg) bool` helper — one DEBUG record
+  per new connection (emitted from `Connect` right after "connect starting")
+  listing the parsed-but-unapplied parameter keys in sorted order, plus a
+  count. Keys only by construction: values may contain credentials, so no
+  redaction machinery is involved at all. Bool return mirrors the `logConfig`
+  convention (false = nothing emitted).
+- The record rides the existing `logConfig` pipeline, so it inherits target/
+  protocol/database attributes and is silent unless `Config.Logger` is set at
+  debug level.
+- README: new "## DSN parameters" subsection between "DSN formats" and
+  "Supported types" — what is consumed (`USER`/`PASSWORD` extracted into
+  Config, never stored in Params), that everything else is parsed but not
+  applied, the risky examples (`IFEXISTS=TRUE` still auto-creates the DB,
+  `ACCESS_MODE_DATA=r`, `AUTO_SERVER`, file-lock, `TRACE_LEVEL_*`), the
+  manual-validation recommendation, and the debug-log note.
+- `doc.go`: mirrored as a short "# DSN parameters" section so godoc carries
+  the same warning.
+- Tests: new `connector_test.go` asserts the record appears at debug level,
+  lists all keys, and leaks no values (including a credential-shaped value);
+  quiet paths (nil config / nil logger / empty params) emit nothing. DSN unit
+  tests unchanged and green.
+- Validation: build, vet (both tags), gofmt, lint 0 issues (both tags,
+  equivalent to make lint when installed), unit+race, integration suite
+  against live H2, CGO-free build — all green.
+
 ---
 
 ## Task 7 — Document generated-keys config scope (finding 8)
