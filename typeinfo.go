@@ -504,8 +504,13 @@ func (ti *TypeInfo) ScanType() reflect.Type {
 	case ValueTypeVarchar, ValueTypeVarcharIgnoreCase, ValueTypeChar,
 		ValueTypeNumeric, ValueTypeDecfloat, ValueTypeUUID:
 		return scanTypeString
-	case ValueTypeBinary, ValueTypeVarbinary, ValueTypeBlob:
+	case ValueTypeBinary, ValueTypeVarbinary, ValueTypeBlob,
+		ValueTypeJSON, ValueTypeGeometry, ValueTypeJavaObject:
 		return scanTypeBytes
+	case ValueTypeEnum:
+		return scanTypeInt64
+	case ValueTypeInterval, ValueTypeArray, ValueTypeRow:
+		return scanTypeString
 	default:
 		return scanTypeAny
 	}

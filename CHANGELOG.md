@@ -10,8 +10,7 @@ Post-MVP maturity fixes from the `MATURITY_MVP.md` review.
 
 - Inline `CLOB` values are now decoded to `string` (previously returned
   `ErrUnsupportedType`), matching the documented supported-types matrix.
-  Fetch-on-demand LOBs still return `ErrUnsupportedType`; LOB streaming is
-  post-MVP.
+  Fetch-on-demand LOBs are fetched via the `LOB_READ` protocol.
 - `sql.ColumnType.DecimalSize()` now reports "unknown" for scale-less
   `NUMERIC(a)` instead of falsely claiming scale 0.
 - `HandshakeContext` now returns the wrapped context error (e.g.
@@ -21,16 +20,51 @@ Post-MVP maturity fixes from the `MATURITY_MVP.md` review.
   discards them (`driver.ErrBadConn`) instead of reusing a half-broken conn.
 - `Session.Close()` bounds the final `STATUS_OK` read with a 2s deadline so a
   dead or half-open peer cannot stall pool teardown.
+- `Rows.NextResultSet()` now returns `io.EOF` (standard Go convention) instead
+  of an error string, so `database/sql` treats it as "no more result sets"
+  rather than an unexpected failure.
 
 ### Added
 
 - `Config.MaxRows` (forwarded as protocol `maxRows`; 0 = unlimited) and
   `Config.FetchSize` (rows per fetch batch; 0 = 100), mirroring JDBC
   `setMaxRows` / `setFetchSize`.
+- `Config.GeneratedKeysMode` and `GeneratedKeysModeSet`: control whether
+  generated keys are requested and in which mode (auto, none, column numbers,
+  column names). `Config.GeneratedKeysColumns` and
+  `Config.GeneratedKeysColumnNames` specify the target columns.
+- `GeneratedKeysResult` type with `Rows` and `Columns` fields, accessible
+  via the `GenerateKeys` field on the driver's `Result` type. Provides
+  multi-column and multi-row generated key access beyond the single
+  `LastInsertId()` path.
+- `GeneratedKeysResult.SingleInt64()`: convenience method equivalent to
+  `LastInsertId()`.
 - `TestIntegration_TypeShowcaseFullSelect`: full supported-type matrix
   against the seeded `type_showcase` table.
 - `TestIntegration_MaxRows`: server-side row capping and fetch-size batching.
+- `TestIntegration_ComplexTypeDecoding`: end-to-end validation of ENUM,
+  INTERVAL, ARRAY, and ROW value decoding.
+- `TestIntegration_FetchOnDemandLOB`: end-to-end validation of LOB_READ
+  streaming for BLOB and CLOB values exceeding the inline threshold.
+- `TestIntegration_GeneratedKeysMultiColumn`: multi-column generated keys
+  via `GeneratedKeysColumnNumbers`.
+- `TestIntegration_GeneratedKeysNoKeys`: `GeneratedKeysMode=none` disables
+  key generation.
 - Handshake-cancellation and dead-session hardening unit tests.
+
+### Value type decoding
+
+Previously unsupported types now decode to documented Go representations:
+
+| H2 type | Go representation |
+|---|---|
+| `JSON` | `[]byte` |
+| `GEOMETRY` | `[]byte` |
+| `JAVA_OBJECT` | `[]byte` |
+| `ENUM` | `int64` (ordinal) |
+| `INTERVAL` | `string` (e.g. `INTERVAL '1-2' YEAR TO MONTH`) |
+| `ARRAY` | `string` (JSON-like `[elem1,elem2]`) |
+| `ROW` | `string` (parenthesized `(field1,field2)`) |
 
 ### Hardening
 

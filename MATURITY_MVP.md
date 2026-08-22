@@ -1,6 +1,6 @@
 # MATURITY_MVP.md — MVP Maturity Review
 
-> Status: ☑ Resolved (2026-08-22) — all P1/P2/P3 findings fixed per `PLAN_MVP_FIX.md`. Per-finding resolution noted inline.
+> Status: ☑ Resolved (2026-08-22) — all P1/P2/P3 findings fixed per `PLAN_MVP_FIX.md`. Additionally, the complex value types (JSON, ENUM, INTERVAL, ARRAY, ROW, GEOMETRY, JAVA_OBJECT) that were previously listed as unsupported now decode to documented Go representations. `DECFLOAT` remains the only unhandled complex type per the PRD. Per-finding resolution noted inline.
 > Purpose: record **fiendings only** for later analysis. Per project policy no source changes are made during this review.
 > Date: 2026-08-22. Reviewer: codebase audit against the H2 2.4.240 reference (`TcpServerThread.java`, `Transfer.java`, `ResultColumn.java`).
 

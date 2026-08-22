@@ -14,6 +14,9 @@ type result struct {
 	lastInsertID    int64
 	lastInsertIDSet bool
 	lastInsertErr   error
+
+	// GeneratedKeys holds the full generated-keys result when available.
+	GeneratedKeys *GeneratedKeysResult
 }
 
 // LastInsertId returns the generated key when H2 returned exactly one numeric

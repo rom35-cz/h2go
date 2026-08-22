@@ -63,6 +63,8 @@ const (
 )
 
 // GeneratedKeysMode constants for generated-keys configuration.
+// These match the enum ordinals in org.h2.engine.GeneratedKeysMode:
+//   NONE = 0, AUTO = 1, COLUMN_NUMBERS = 2, COLUMN_NAMES = 3
 //
 // Reference: org.h2.engine.GeneratedKeysMode
 const (

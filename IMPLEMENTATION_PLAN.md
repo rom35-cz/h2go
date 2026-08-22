@@ -835,10 +835,11 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
 ## Post-MVP backlog (not scheduled here; from PRD §11.2)
 
 - Full statement cancellation via `SESSION_CANCEL_STATEMENT` (deep integration).
-- Extended generated keys (multi-column / non-numeric).
-- LOB streaming (`LOB_READ`) for BLOB/CLOB.
+- Extended generated keys (multi-column / non-numeric). (Implemented in v0.2.0.)
+- LOB streaming (`LOB_READ`) for BLOB/CLOB. (Implemented in v0.2.0.)
 - JSON, DECFLOAT (exact decimal), ENUM, INTERVAL, ARRAY, ROW, GEOMETRY, JAVA_OBJECT decoding.
-- Multiple result sets.
+  (JSON, ENUM, INTERVAL, ARRAY, ROW, GEOMETRY, JAVA_OBJECT implemented in v0.2.0; DECFLOAT remains as `string`.)
+- Multiple result sets. (H2 native TCP protocol 21 does not support multiple result sets from a single query execution; `Rows.NextResultSet()` returns `io.EOF`.)
 - TLS/SSL TCP transport.
 - Benchmarks and allocation tuning.
 

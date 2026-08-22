@@ -503,7 +503,14 @@ func TestTypeInfo_ScanType(t *testing.T) {
 		{"string-numeric", &TypeInfo{ValueType: ValueTypeNumeric}, reflect.TypeOf("")},
 		{"bytes", &TypeInfo{ValueType: ValueTypeVarbinary}, reflect.TypeOf([]byte(nil))},
 		{"time", &TypeInfo{ValueType: ValueTypeTimestampTZ}, reflect.TypeOf(time.Time{})},
-		{"any-unsupported", &TypeInfo{ValueType: ValueTypeArray}, reflect.TypeOf((*any)(nil)).Elem()},
+		{"string-array", &TypeInfo{ValueType: ValueTypeArray}, reflect.TypeOf("")},
+		{"string-row", &TypeInfo{ValueType: ValueTypeRow}, reflect.TypeOf("")},
+		{"string-interval", &TypeInfo{ValueType: ValueTypeInterval}, reflect.TypeOf("")},
+		{"int64-enum", &TypeInfo{ValueType: ValueTypeEnum}, reflect.TypeOf(int64(0))},
+		{"bytes-json", &TypeInfo{ValueType: ValueTypeJSON}, reflect.TypeOf([]byte(nil))},
+		{"bytes-geometry", &TypeInfo{ValueType: ValueTypeGeometry}, reflect.TypeOf([]byte(nil))},
+		{"bytes-javaobject", &TypeInfo{ValueType: ValueTypeJavaObject}, reflect.TypeOf([]byte(nil))},
+		{"any-unsupported", &TypeInfo{ValueType: 999}, reflect.TypeOf((*any)(nil)).Elem()},
 	}
 
 	for _, tc := range tests {

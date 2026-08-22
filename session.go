@@ -3,7 +3,6 @@ package h2go
 import (
 	"context"
 	"database/sql/driver"
-	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -19,6 +18,11 @@ type ResultWithUpdateCount struct {
 	LastInsertID    int64
 	LastInsertIDSet bool
 	LastInsertErr   error
+
+	// GeneratedKeys holds the full generated-keys result when available.
+	// For statements that return generated keys (INSERT, MERGE), this field
+	// provides access to multi-column and multi-row key values.
+	GeneratedKeys *GeneratedKeysResult
 }
 
 // Session holds an authenticated H2 TCP session.
@@ -269,8 +273,38 @@ func (s *Session) ExecuteUpdatePreparedWithParams(ctx context.Context, cmd *Prep
 	// Request generated keys so Result.LastInsertId can be populated when H2
 	// returns exactly one numeric generated key. The helper below will consume
 	// the generated-keys result and convert it into a driver.Result field.
-	if err = s.tr.WriteInt32(GeneratedKeysAuto); err != nil {
+	genKeysMode := s.generatedKeysMode()
+	if err = s.tr.WriteInt32(genKeysMode); err != nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
+	}
+
+	// For column-number and column-name modes, write the selector data.
+	if genKeysMode == GeneratedKeysColumnNumbers {
+		cols := s.cfg.GeneratedKeysColumns
+		if cols == nil {
+			cols = []int{}
+		}
+		if err = s.tr.WriteInt32(int32(len(cols))); err != nil {
+			return nil, wrapError("ExecuteUpdatePreparedWithParams: write column count", err)
+		}
+		for _, col := range cols {
+			if err = s.tr.WriteInt32(int32(col)); err != nil {
+				return nil, wrapError("ExecuteUpdatePreparedWithParams: write column index", err)
+			}
+		}
+	} else if genKeysMode == GeneratedKeysColumnNames {
+		names := s.cfg.GeneratedKeysColumnNames
+		if names == nil {
+			names = []string{}
+		}
+		if err = s.tr.WriteInt32(int32(len(names))); err != nil {
+			return nil, wrapError("ExecuteUpdatePreparedWithParams: write name count", err)
+		}
+		for _, name := range names {
+			if err = s.tr.WriteString(name); err != nil {
+				return nil, wrapError("ExecuteUpdatePreparedWithParams: write column name", err)
+			}
+		}
 	}
 
 	if err = s.tr.Flush(); err != nil {
@@ -295,13 +329,20 @@ func (s *Session) ExecuteUpdatePreparedWithParams(ctx context.Context, cmd *Prep
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
 
-	lastInsertID, err := s.readGeneratedKeysLastInsertID()
 	lastInsertErr := error(nil)
-	if err != nil {
-		if errors.Is(err, ErrLastInsertIDUnavailable) {
-			lastInsertErr = err
+	var generatedKeys *GeneratedKeysResult
+	var lastInsertID int64
+	lastInsertIDSet := false
+	if genKeysMode != GeneratedKeysNone {
+		generatedKeys, lastInsertID, err = s.readGeneratedKeys()
+		if err != nil {
+			if isLastInsertIDUnavailable(err) {
+				lastInsertErr = err
+			} else {
+				return nil, err
+			}
 		} else {
-			return nil, err
+			lastInsertIDSet = true
 		}
 	}
 
@@ -311,7 +352,23 @@ func (s *Session) ExecuteUpdatePreparedWithParams(ctx context.Context, cmd *Prep
 		UpdateCount:     updateCount,
 		AutoCommit:      autoCommit,
 		LastInsertID:    lastInsertID,
-		LastInsertIDSet: lastInsertErr == nil,
+		LastInsertIDSet: lastInsertIDSet,
 		LastInsertErr:   lastInsertErr,
+		GeneratedKeys:   generatedKeys,
 	}, nil
+}
+
+// generatedKeysMode returns the generated keys mode to use for this session.
+// It reads from the config, defaulting to GeneratedKeysAuto when the caller
+// has not explicitly set GeneratedKeysMode.
+func (s *Session) generatedKeysMode() int32 {
+	if s == nil || s.cfg == nil || !s.cfg.GeneratedKeysModeSet {
+		return GeneratedKeysAuto
+	}
+	switch s.cfg.GeneratedKeysMode {
+	case GeneratedKeysNone, GeneratedKeysAuto, GeneratedKeysColumnNumbers, GeneratedKeysColumnNames:
+		return int32(s.cfg.GeneratedKeysMode)
+	default:
+		return GeneratedKeysAuto
+	}
 }

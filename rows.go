@@ -352,14 +352,19 @@ func (r *Rows) fetchRows(fetch int) error {
 	return nil
 }
 
-// HasNextResultSet is not supported in MVP.
+// HasNextResultSet reports whether there are more result sets to read.
+// H2's native TCP protocol does not support multiple result sets from a single
+// query execution, so this always returns false.
 func (r *Rows) HasNextResultSet() bool {
 	return false
 }
 
-// NextResultSet is not supported in MVP.
+// NextResultSet advances to the next result set.
+// H2's native TCP protocol does not support multiple result sets from a single
+// query execution, so this returns io.EOF (the standard Go convention for "no
+// more result sets").
 func (r *Rows) NextResultSet() error {
-	return fmt.Errorf("h2go: multiple result sets not supported in MVP")
+	return io.EOF
 }
 
 // ColumnTypeDatabaseTypeName returns the database type name for a column.

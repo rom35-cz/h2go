@@ -46,6 +46,31 @@ type Config struct {
 	// RESULT_FETCH_ROWS batch while streaming a result set. Zero (the default)
 	// uses defaultFetchSize (100). Negative values are treated as zero.
 	FetchSize int
+
+	// GeneratedKeysMode controls the generated keys request mode sent with
+	// COMMAND_EXECUTE_UPDATE. When zero (default), the driver uses
+	// GeneratedKeysAuto, mirroring JDBC Statement.RETURN_GENERATED_KEYS.
+	// Set to one of the GeneratedKeys* constants to override:
+	//   - GeneratedKeysAuto (1): auto-detect generated key column.
+	//   - GeneratedKeysNone (0): no generated keys requested.
+	//   - GeneratedKeysColumnNumbers (2): use GeneratedKeysColumns.
+	//   - GeneratedKeysColumnNames (3): use GeneratedKeysColumnNames.
+	// Note: GeneratedKeysNone == 0, which is the zero value; the driver
+	// treats 0 as "default" (auto) unless GeneratedKeysModeSet is true.
+	GeneratedKeysMode int
+
+	// GeneratedKeysModeSet marks that GeneratedKeysMode was explicitly set
+	// by the caller. When false (default), the driver uses GeneratedKeysAuto
+	// regardless of the GeneratedKeysMode field value.
+	GeneratedKeysModeSet bool
+
+	// GeneratedKeysColumns holds column indices (1-based) for generated keys
+	// when GeneratedKeysMode is GeneratedKeysColumnNumbers.
+	GeneratedKeysColumns []int
+
+	// GeneratedKeysColumnNames holds column names for generated keys when
+	// GeneratedKeysMode is GeneratedKeysColumnNames.
+	GeneratedKeysColumnNames []string
 }
 
 // ParseDSN parses an H2 DSN string into a Config.

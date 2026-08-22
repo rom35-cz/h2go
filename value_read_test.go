@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"net"
 	"testing"
 	"time"
 )
@@ -783,40 +784,104 @@ func TestReadValue_InlineBlob_BadMagic(t *testing.T) {
 	}
 }
 
-// TestReadValue_FetchOnDemandLOB verifies the length == -1 path still returns
-// ErrUnsupportedType and drains the fetch-on-demand metadata.
+// TestReadValue_FetchOnDemandLOB verifies the length == -1 path fetches LOB
+// data via LOB_READ requests against a piped server.
 func TestReadValue_FetchOnDemandLOB(t *testing.T) {
 	for _, vt := range []int32{ValueTypeBlob, ValueTypeClob} {
-		buf := new(bytes.Buffer)
-		writeValueType(buf, vt)
-		writeInt64(buf, -1)              // fetch-on-demand marker
-		writeInt32(buf, 7)               // tableId
-		writeInt64(buf, 99)              // id
-		writeBytes(buf, []byte{1, 2, 3}) // hmac
-		if vt == ValueTypeClob {
-			writeInt64(buf, 12) // octetLength (protocol 20+)
-		}
-		writeInt64(buf, 34) // charLength / precision
+		t.Run(valueTypeName(vt), func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
 
-		tr := mockTransferFromBytes(buf.Bytes())
-		val, err := tr.ReadValue(nil)
-		if err == nil {
-			t.Fatalf("type %d: expected error, got value %v", vt, val)
-		}
-		if !errors.Is(err, ErrUnsupportedType) {
-			t.Errorf("type %d: expected ErrUnsupportedType, got %v", vt, err)
-		}
-		if val != nil {
-			t.Errorf("type %d: expected nil value, got %v", vt, val)
-		}
+			clientTr := NewReadWriter(clientConn)
+			serverTr := NewReadWriter(serverConn)
+
+			// Server goroutine: write metadata, then respond to LOB_READ.
+			serverDone := make(chan struct{})
+			go func() {
+				defer close(serverDone)
+				// Write value type + fetch-on-demand metadata.
+				serverTr.WriteInt32(vt) // type code
+				serverTr.WriteInt64(-1) // fetch-on-demand marker
+				serverTr.WriteInt32(7)  // tableId
+				serverTr.WriteInt64(99) // lobID
+				serverTr.WriteBytes([]byte{1, 2, 3}) // hmac
+				if vt == ValueTypeClob {
+					serverTr.WriteInt64(12) // octetLength
+				}
+				serverTr.WriteInt64(34) // charLength / precision
+				serverTr.Flush()
+
+				// Read the LOB_READ request and respond with chunk, then EOF.
+				op, _ := serverTr.ReadInt32()
+				if op != LobRead {
+					t.Errorf("expected LobRead(%d), got %d", LobRead, op)
+				}
+				lobID, _ := serverTr.ReadInt64()
+				if lobID != 99 {
+					t.Errorf("expected lobID 99, got %d", lobID)
+				}
+				hmac, _ := serverTr.ReadBytes()
+				_ = hmac
+				offset, _ := serverTr.ReadInt64()
+				_ = offset
+				reqLen, _ := serverTr.ReadInt32()
+				_ = reqLen
+
+				// Respond with chunk
+				chunk := []byte("hello")
+				serverTr.WriteInt32(StatusOK)
+				serverTr.WriteInt32(int32(len(chunk)))
+				serverTr.w.Write(chunk)
+				serverTr.Flush()
+
+				// Respond with 0-length end-of-data
+				op2, _ := serverTr.ReadInt32()
+				if op2 != LobRead {
+					t.Errorf("expected second LobRead(%d), got %d", LobRead, op2)
+				}
+				serverTr.ReadInt64() // lobID
+				serverTr.ReadBytes() // hmac
+				serverTr.ReadInt64() // offset
+				serverTr.ReadInt32() // reqLen
+				serverTr.WriteInt32(StatusOK)
+				serverTr.WriteInt32(0) // actualLen=0 means EOF
+				serverTr.Flush()
+			}()
+
+			val, err := clientTr.ReadValue(nil)
+			if err != nil {
+				t.Fatalf("ReadValue failed: %v", err)
+			}
+			// BLOB returns []byte, CLOB returns string
+			switch vt {
+			case ValueTypeBlob:
+				got, ok := val.([]byte)
+				if !ok {
+					t.Fatalf("expected []byte, got %T", val)
+				}
+				if string(got) != "hello" {
+					t.Errorf("BLOB: got %s, want hello", string(got))
+				}
+			case ValueTypeClob:
+				got, ok := val.(string)
+				if !ok {
+					t.Fatalf("expected string, got %T", val)
+				}
+				if got != "hello" {
+					t.Errorf("CLOB: got %s, want hello", got)
+				}
+			}
+			<-serverDone
+		})
 	}
 }
 
-// TestReadValue_UnsupportedType ensures unsupported H2 types are surfaced
+// TestReadValue_UnsupportedType ensures unknown type codes are surfaced
 // with the ErrUnsupportedType sentinel.
 func TestReadValue_UnsupportedType(t *testing.T) {
 	buf := new(bytes.Buffer)
-	writeValueType(buf, ValueTypeJSON)
+	writeValueType(buf, 255) // code not in the ValueType constants
 
 	tr := mockTransferFromBytes(buf.Bytes())
 	val, err := tr.ReadValue(nil)

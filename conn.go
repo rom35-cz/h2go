@@ -310,6 +310,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		lastInsertID:    res.LastInsertID,
 		lastInsertIDSet: res.LastInsertIDSet,
 		lastInsertErr:   res.LastInsertErr,
+		GeneratedKeys:   res.GeneratedKeys,
 	}, nil
 }
 

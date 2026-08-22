@@ -103,8 +103,11 @@ The driver focuses on the MVP scalar set used by the test suite:
 | `UUID` | `string` | Canonical 36-character textual form |
 | `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMP WITH TIME ZONE` | `time.Time` | Includes fractional-second precision |
 | `CHAR`, `VARCHAR` | `string` | Text values |
-| `CLOB` | `string` | Inline CLOBs (≤ `MAX_LENGTH_INPLACE_LOB`); fetch-on-demand LOBs return `ErrUnsupportedType` (LOB streaming is post-MVP) |
-| `BINARY`, `VARBINARY`, `BLOB` | `[]byte` | Raw bytes; inline BLOBs only, fetch-on-demand BLOBs return `ErrUnsupportedType` |
+| `CLOB` | `string` | Inline CLOBs (≤ `MAX_LENGTH_INPLACE_LOB`); larger CLOBs fetched on demand via `LOB_READ` |
+| `BINARY`, `VARBINARY`, `BLOB` | `[]byte` | Raw bytes; inline BLOBs only, larger BLOBs fetched on demand via `LOB_READ` |
+| `JSON`, `GEOMETRY`, `JAVA_OBJECT` | `[]byte` | Raw bytes |
+| `ENUM` | `int64` | Ordinal value |
+| `INTERVAL`, `ARRAY`, `ROW` | `string` | Text representation |
 | `NULL` | `nil` | Preserved as database null |
 
 Unsupported H2 types return a clear error or a documented fallback value.
@@ -116,10 +119,10 @@ Current scope intentionally excludes:
 - PostgreSQL compatibility mode
 - JDBC bridge / embedded JVM integration
 - TLS/SSL transport
-- full LOB streaming
 - multiple result sets
 - exact-decimal helper APIs beyond string-based `NUMERIC`
 - extended generated-key APIs beyond the MVP `LastInsertId()` path
+  (accessible via `GeneratedKeysResult` on the driver's `Result` type)
 
 These are tracked as post-MVP enhancements in the implementation plan.
 

@@ -122,6 +122,7 @@ func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (drive
 		lastInsertID:    res.LastInsertID,
 		lastInsertIDSet: res.LastInsertIDSet,
 		lastInsertErr:   res.LastInsertErr,
+		GeneratedKeys:   res.GeneratedKeys,
 	}, nil
 }
 

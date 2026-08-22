@@ -176,7 +176,8 @@ func TestRows_ColumnTypeScanType(t *testing.T) {
 			{Alias: "name", TypeInfo: &TypeInfo{ValueType: ValueTypeVarchar}},
 			{Alias: "payload", TypeInfo: &TypeInfo{ValueType: ValueTypeVarbinary}},
 			{Alias: "created", TypeInfo: &TypeInfo{ValueType: ValueTypeTimestamp}},
-			{Alias: "unsupported", TypeInfo: &TypeInfo{ValueType: ValueTypeArray}},
+			{Alias: "arr", TypeInfo: &TypeInfo{ValueType: ValueTypeArray}},
+			{Alias: "unknown", TypeInfo: &TypeInfo{ValueType: 999}},
 		},
 	}
 
@@ -191,7 +192,8 @@ func TestRows_ColumnTypeScanType(t *testing.T) {
 		{3, reflect.TypeOf("")},
 		{4, reflect.TypeOf([]byte(nil))},
 		{5, reflect.TypeOf(time.Time{})},
-		{6, reflect.TypeOf((*any)(nil)).Elem()},
+		{6, reflect.TypeOf("")},
+		{7, reflect.TypeOf((*any)(nil)).Elem()},
 	}
 
 	for _, tc := range tests {
@@ -201,7 +203,8 @@ func TestRows_ColumnTypeScanType(t *testing.T) {
 	}
 }
 
-// TestRows_NextResultSet tests that multiple result sets are not supported.
+// TestRows_NextResultSet tests that multiple result sets are not supported
+// via the protocol and return the standard Go EOF signal.
 func TestRows_NextResultSet(t *testing.T) {
 	r := &Rows{}
 
@@ -210,8 +213,8 @@ func TestRows_NextResultSet(t *testing.T) {
 	}
 
 	err := r.NextResultSet()
-	if err == nil {
-		t.Error("NextResultSet: expected error")
+	if err != io.EOF {
+		t.Errorf("NextResultSet: expected io.EOF, got %v", err)
 	}
 }
 

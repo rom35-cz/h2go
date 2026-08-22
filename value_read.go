@@ -5,6 +5,7 @@
 package h2go
 
 import (
+	"bytes"
 	"database/sql/driver"
 	"fmt"
 	"strings"
@@ -20,9 +21,10 @@ import (
 //   - []byte (for BINARY, VARBINARY)
 //   - time.Time (for DATE, TIME, TIMESTAMP, and timezone variants)
 //
-// The _ parameter is the column type info which may be used in future for
-// type-specific decoding (currently types are self-describing in wire format).
-func (tr *Tr) ReadValue(_ *TypeInfo) (driver.Value, error) {
+// The colType parameter provides column-level type metadata used for recursive
+// decoding of complex types such as ARRAY (where ExtTypeInfo holds the element
+// type). For simple types the parameter is not needed.
+func (tr *Tr) ReadValue(colType *TypeInfo) (driver.Value, error) {
 	// Read the value type code (this is the ValueType constant, not TI)
 	typeCode, err := tr.ReadInt32()
 	if err != nil {
@@ -89,11 +91,20 @@ func (tr *Tr) ReadValue(_ *TypeInfo) (driver.Value, error) {
 		// DECFLOAT is sent as a string
 		return tr.readStringValue()
 
-	case ValueTypeArray, ValueTypeRow, ValueTypeEnum, ValueTypeGeometry,
-		ValueTypeInterval, ValueTypeJavaObject, ValueTypeJSON:
-		// MVP: return error for unsupported complex types
-		return nil, fmt.Errorf("h2go: ReadValue: %w: type code %d (%s)",
-			ErrUnsupportedType, typeCode, valueTypeName(typeCode))
+	case ValueTypeJSON, ValueTypeGeometry, ValueTypeJavaObject:
+		return tr.readBytesValue()
+
+	case ValueTypeEnum:
+		return tr.readEnumValue()
+
+	case ValueTypeInterval:
+		return tr.readIntervalValue()
+
+	case ValueTypeArray:
+		return tr.readArrayValue(colType)
+
+	case ValueTypeRow:
+		return tr.readRowValue(colType)
 
 	default:
 		return nil, fmt.Errorf("h2go: ReadValue: %w: unknown type code %d", ErrUnsupportedType, typeCode)
@@ -191,6 +202,171 @@ func (tr *Tr) readStringValue() (driver.Value, error) {
 	return *s, nil
 }
 
+// readEnumValue reads an ENUM value (ordinal int32, protocol 21).
+func (tr *Tr) readEnumValue() (driver.Value, error) {
+	ordinal, err := tr.ReadInt32()
+	if err != nil {
+		return nil, fmt.Errorf("h2go: readEnumValue: %w", err)
+	}
+	return int64(ordinal), nil
+}
+
+// readIntervalValue reads an INTERVAL value and returns a human-readable string.
+// Wire format: ordinal byte (negated when negative), then leading long, then
+// optional remaining long for fractional-second interval types.
+// Reference: Transfer.writeValue INTERVAL case in H2 2.4.240.
+func (tr *Tr) readIntervalValue() (driver.Value, error) {
+	x, err := tr.ReadByte()
+	if err != nil {
+		return nil, fmt.Errorf("h2go: readIntervalValue: failed to read ordinal: %w", err)
+	}
+	// Byte is unsigned (0..255). When negative in Java (readByte signed),
+	// x >= 128 means the java value < 0 → bit 7 is negation flag.
+	negative := x >= 128
+	var qualifierOrdinal int
+	if negative {
+		qualifierOrdinal = int(^x) & 0x7f
+	} else {
+		qualifierOrdinal = int(x)
+	}
+
+	qualifier := intervalQualifier(qualifierOrdinal)
+
+	leading, err := tr.ReadInt64()
+	if err != nil {
+		return nil, fmt.Errorf("h2go: readIntervalValue: failed to read leading: %w", err)
+	}
+	if negative {
+		leading = -leading
+	}
+
+	if qualifier.hasRemaining {
+		remaining, err := tr.ReadInt64()
+		if err != nil {
+			return nil, fmt.Errorf("h2go: readIntervalValue: failed to read remaining: %w", err)
+		}
+		return formatInterval(qualifier.name, leading, remaining), nil
+	}
+	return formatInterval(qualifier.name, leading, 0), nil
+}
+
+// intervalQual holds the name and whether the interval type has a trailing
+// remaining field (ordinal >= 5 in H2, which includes YEAR TO MONTH, DAY TO
+// HOUR, etc., not just SECONDS).
+type intervalQual struct {
+	name          string
+	hasRemaining  bool
+}
+
+// intervalQualifier returns the interval qualifier metadata for the ordinal.
+func intervalQualifier(ordinal int) intervalQual {
+	switch ordinal {
+	case 0:
+		return intervalQual{"YEAR", false}
+	case 1:
+		return intervalQual{"MONTH", false}
+	case 2:
+		return intervalQual{"DAY", false}
+	case 3:
+		return intervalQual{"HOUR", false}
+	case 4:
+		return intervalQual{"MINUTE", false}
+	case 5:
+		return intervalQual{"SECOND", true}
+	case 6:
+		return intervalQual{"YEAR TO MONTH", true}
+	case 7:
+		return intervalQual{"DAY TO HOUR", true}
+	case 8:
+		return intervalQual{"DAY TO MINUTE", true}
+	case 9:
+		return intervalQual{"DAY TO SECOND", true}
+	case 10:
+		return intervalQual{"HOUR TO MINUTE", true}
+	case 11:
+		return intervalQual{"HOUR TO SECOND", true}
+	case 12:
+		return intervalQual{"MINUTE TO SECOND", true}
+	default:
+		return intervalQual{"UNKNOWN", false}
+	}
+}
+
+// formatInterval renders an interval value as a human-readable string.
+func formatInterval(qualifier string, leading, remaining int64) string {
+	switch qualifier {
+	case "YEAR TO MONTH":
+		return fmt.Sprintf("INTERVAL '%d-%d' YEAR TO MONTH", leading, remaining)
+	case "DAY TO HOUR":
+		return fmt.Sprintf("INTERVAL '%d %d' DAY TO HOUR", leading, remaining)
+	case "DAY TO MINUTE":
+		return fmt.Sprintf("INTERVAL '%d %d:%d' DAY TO MINUTE", leading, remaining/60, remaining%60)
+	case "HOUR TO MINUTE":
+		return fmt.Sprintf("INTERVAL '%d:%d' HOUR TO MINUTE", leading, remaining)
+	case "SECOND", "DAY TO SECOND", "HOUR TO SECOND", "MINUTE TO SECOND":
+		secs := remaining / 1_000_000_000
+		nanos := remaining % 1_000_000_000
+		if nanos > 0 {
+			return fmt.Sprintf("INTERVAL '%d %d.%09d' %s", leading, secs, nanos, qualifier)
+		}
+		return fmt.Sprintf("INTERVAL '%d %d' %s", leading, secs, qualifier)
+	case "YEAR", "MONTH", "DAY", "HOUR", "MINUTE":
+		return fmt.Sprintf("INTERVAL '%d' %s", leading, qualifier)
+	default:
+		return fmt.Sprintf("INTERVAL '%d' %s", leading, qualifier)
+	}
+}
+
+// readArrayValue reads an ARRAY value as a JSON-like string.
+// Each element is decoded recursively via ReadValue using the element type
+// from colType.ExtTypeInfo when available.
+func (tr *Tr) readArrayValue(colType *TypeInfo) (driver.Value, error) {
+	length, err := tr.ReadInt32()
+	if err != nil {
+		return nil, fmt.Errorf("h2go: readArrayValue: failed to read length: %w", err)
+	}
+	if length < 0 {
+		// H2 1.4.200 and older may use negative length with a type name string
+		length = ^length
+		_, _ = tr.ReadString() // skip type name
+	}
+	if length == 0 {
+		return "[]", nil
+	}
+	var elemType *TypeInfo
+	if colType != nil {
+		elemType = colType.ExtTypeInfo
+	}
+	elems := make([]string, 0, length)
+	for i := int32(0); i < length; i++ {
+		elem, err := tr.ReadValue(elemType)
+		if err != nil {
+			return nil, fmt.Errorf("h2go: readArrayValue: element %d: %w", i, err)
+		}
+		elems = append(elems, fmt.Sprintf("%v", elem))
+	}
+	return "[" + strings.Join(elems, ",") + "]", nil
+}
+
+// readRowValue reads a ROW value as a JSON-like string.
+func (tr *Tr) readRowValue(colType *TypeInfo) (driver.Value, error) {
+	length, err := tr.ReadInt32()
+	if err != nil {
+		return nil, fmt.Errorf("h2go: readRowValue: failed to read length: %w", err)
+	}
+	fields := make([]string, 0, length)
+	for i := int32(0); i < length; i++ {
+		// For ROW with type info, we could look up the field type, but for MVP
+		// we decode each field without element type hints.
+		f, err := tr.ReadValue(nil)
+		if err != nil {
+			return nil, fmt.Errorf("h2go: readRowValue: field %d: %w", i, err)
+		}
+		fields = append(fields, fmt.Sprintf("%v", f))
+	}
+	return "(" + strings.Join(fields, ",") + ")", nil
+}
+
 // readBytesValue reads a VARBINARY/BINARY value.
 func (tr *Tr) readBytesValue() (driver.Value, error) {
 	b, err := tr.ReadBytes()
@@ -225,25 +401,43 @@ func formatUUID(high, low int64) string {
 }
 
 // readLOBValue reads a BLOB or CLOB value.
-// For MVP, this supports inline LOBs only (length >= 0).
-// Fetch-on-demand LOBs (length == -1) return an error.
+// Inline LOBs (length >= 0) are decoded directly from the value stream.
+// Fetch-on-demand LOBs (length == -1) are fetched via LOB_READ requests
+// on the session's transfer stream.
 func (tr *Tr) readLOBValue(typeCode int32) (driver.Value, error) {
 	length, err := tr.ReadInt64()
 	if err != nil {
 		return nil, fmt.Errorf("h2go: readLOBValue: failed to read length: %w", err)
 	}
 
-	// Fetch-on-demand LOB (not supported in MVP)
+	// Fetch-on-demand LOB
 	if length == -1 {
-		// Skip the fetch-on-demand metadata
-		_, _ = tr.ReadInt32() // tableId
-		_, _ = tr.ReadInt64() // id
-		_, _ = tr.ReadBytes() // hmac
-		if typeCode == ValueTypeClob {
-			_, _ = tr.ReadInt64() // octetLength (protocol 20+)
+		tableID, err := tr.ReadInt32()
+		if err != nil {
+			return nil, fmt.Errorf("h2go: readLOBValue: failed to read tableID: %w", err)
 		}
-		_, _ = tr.ReadInt64() // charLength or precision
-		return nil, fmt.Errorf("h2go: readLOBValue: %w: fetch-on-demand LOB", ErrUnsupportedType)
+		lobID, err := tr.ReadInt64()
+		if err != nil {
+			return nil, fmt.Errorf("h2go: readLOBValue: failed to read lobID: %w", err)
+		}
+		hmac, err := tr.ReadBytes()
+		if err != nil {
+			return nil, fmt.Errorf("h2go: readLOBValue: failed to read hmac: %w", err)
+		}
+		var octetLength int64
+		if typeCode == ValueTypeClob {
+			octetLength, err = tr.ReadInt64()
+			if err != nil {
+				return nil, fmt.Errorf("h2go: readLOBValue: failed to read octetLength: %w", err)
+			}
+		}
+		charLength, err := tr.ReadInt64()
+		if err != nil {
+			return nil, fmt.Errorf("h2go: readLOBValue: failed to read charLength: %w", err)
+		}
+		_ = tableID // not needed for server-side lookup; lobID is the key
+
+		return tr.fetchLobOnDemand(typeCode, lobID, hmac, octetLength, charLength)
 	}
 
 	if length < 0 {
@@ -252,8 +446,6 @@ func (tr *Tr) readLOBValue(typeCode int32) (driver.Value, error) {
 
 	// For BLOB: read raw bytes
 	if typeCode == ValueTypeBlob {
-		// In H2 wire format, BLOB data is read via createBlob which reads from the stream
-		// For inline BLOBs with known length, we read the bytes directly
 		data := make([]byte, length)
 		if err := tr.ReadFull(data); err != nil {
 			return nil, fmt.Errorf("h2go: readLOBValue: failed to read BLOB data: %w", err)
@@ -275,6 +467,82 @@ func (tr *Tr) readLOBValue(typeCode int32) (driver.Value, error) {
 	}
 
 	return nil, fmt.Errorf("h2go: readLOBValue: %w: type code %d", ErrUnsupportedType, typeCode)
+}
+
+// lobReadChunkSize is the maximum bytes requested per LOB_READ operation.
+// Matches the server's limit of 16 * IO_BUFFER_SIZE (64 KiB).
+const lobReadChunkSize = 16 * 4096
+
+// fetchLobOnDemand fetches a fetch-on-demand LOB from the server by issuing
+// repeated LOB_READ requests until all data has been received.
+func (tr *Tr) fetchLobOnDemand(typeCode int32, lobID int64, hmac []byte, octetLength, charLength int64) (driver.Value, error) {
+	var totalBytes int64
+	// For BLOB, total is octet length (precision). For CLOB, we use octetLength
+	// if available, otherwise estimate from charLength.
+	if typeCode == ValueTypeBlob {
+		totalBytes = charLength // BLOB sends precision in charLength field
+	} else {
+		totalBytes = octetLength
+	}
+	if totalBytes > MaxWireLength {
+		return nil, fmt.Errorf("h2go: fetchLobOnDemand: LOB length %d exceeds cap %d", totalBytes, MaxWireLength)
+	}
+
+	var buf bytes.Buffer
+	if totalBytes > 0 {
+		buf.Grow(int(totalBytes))
+	}
+
+	var offset int64
+	for {
+		if err := tr.WriteInt32(LobRead); err != nil {
+			return nil, fmt.Errorf("h2go: fetchLobOnDemand: write op: %w", err)
+		}
+		if err := tr.WriteInt64(lobID); err != nil {
+			return nil, fmt.Errorf("h2go: fetchLobOnDemand: write lobID: %w", err)
+		}
+		if err := tr.WriteBytes(hmac); err != nil {
+			return nil, fmt.Errorf("h2go: fetchLobOnDemand: write hmac: %w", err)
+		}
+		if err := tr.WriteInt64(offset); err != nil {
+			return nil, fmt.Errorf("h2go: fetchLobOnDemand: write offset: %w", err)
+		}
+		if err := tr.WriteInt32(lobReadChunkSize); err != nil {
+			return nil, fmt.Errorf("h2go: fetchLobOnDemand: write length: %w", err)
+		}
+		if err := tr.Flush(); err != nil {
+			return nil, fmt.Errorf("h2go: fetchLobOnDemand: flush: %w", err)
+		}
+
+		status, err := tr.ReadInt32()
+		if err != nil {
+			return nil, fmt.Errorf("h2go: fetchLobOnDemand: read status: %w", err)
+		}
+		if status != StatusOK {
+			return nil, fmt.Errorf("h2go: fetchLobOnDemand: unexpected status %d", status)
+		}
+
+		actualLen, err := tr.ReadInt32()
+		if err != nil {
+			return nil, fmt.Errorf("h2go: fetchLobOnDemand: read actual length: %w", err)
+		}
+		if actualLen <= 0 {
+			break // end of LOB data
+		}
+
+		chunk := make([]byte, actualLen)
+		if err := tr.ReadFull(chunk); err != nil {
+			return nil, fmt.Errorf("h2go: fetchLobOnDemand: read chunk: %w", err)
+		}
+		buf.Write(chunk)
+		offset += int64(actualLen)
+	}
+
+	if typeCode == ValueTypeClob {
+		// CLOB payload is UTF-8 encoded
+		return buf.String(), nil
+	}
+	return buf.Bytes(), nil
 }
 
 // lobMagic is the magic number written by H2 after inline LOB data.

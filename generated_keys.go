@@ -8,50 +8,107 @@ import (
 	"strings"
 )
 
-// readGeneratedKeysLastInsertID consumes the generated-keys result set that
-// follows an update response and, when possible, extracts a single numeric key
-// suitable for driver.Result.LastInsertId().
-//
-// If H2 returned no generated key, multiple keys, or a non-numeric key, the
-// returned error wraps ErrLastInsertIDUnavailable. Protocol/I/O failures and H2
-// server errors are returned directly.
-func (s *Session) readGeneratedKeysLastInsertID() (int64, error) {
+// GeneratedKeysResult holds the full generated keys result set returned by H2
+// after an INSERT or MERGE statement. It provides access to both single and
+// multi-column generated keys through the Rows field.
+type GeneratedKeysResult struct {
+	// Columns holds the column names of the generated keys result.
+	Columns []string
+	// Rows holds the generated key values, one entry per row.
+	Rows [][]driver.Value
+}
+
+// SingleInt64 returns the single numeric generated key when the result contains
+// exactly one row with one numeric column. It is equivalent to the MVP
+// LastInsertId() path.
+func (gkr *GeneratedKeysResult) SingleInt64() (int64, error) {
+	if gkr == nil {
+		return 0, lastInsertIDUnavailableError("no generated keys result")
+	}
+	if len(gkr.Rows) != 1 || len(gkr.Columns) != 1 {
+		return 0, lastInsertIDUnavailableError("H2 returned %d generated key column(s) across %d row(s)",
+			len(gkr.Columns), len(gkr.Rows))
+	}
+	if len(gkr.Rows[0]) != 1 {
+		return 0, lastInsertIDUnavailableError("H2 returned %d generated key value(s)", len(gkr.Rows[0]))
+	}
+	return generatedKeyValueToInt64(gkr.Rows[0][0])
+}
+
+// readGeneratedKeys reads the full generated-keys result set that follows an
+// update response. It returns the parsed result and also extracts the single
+// numeric LastInsertID when possible.
+func (s *Session) readGeneratedKeys() (*GeneratedKeysResult, int64, error) {
 	if s == nil || s.tr == nil {
-		return 0, fmt.Errorf("h2go: readGeneratedKeysLastInsertID: session closed")
+		return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: session closed")
 	}
 
 	columnCount, err := s.tr.ReadInt32()
 	if err != nil {
-		return 0, fmt.Errorf("h2go: readGeneratedKeysLastInsertID: failed to read column count: %w", err)
+		return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: failed to read column count: %w", err)
 	}
 	rowCount, err := s.tr.ReadRowCount()
 	if err != nil {
-		return 0, fmt.Errorf("h2go: readGeneratedKeysLastInsertID: failed to read row count: %w", err)
+		return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: failed to read row count: %w", err)
 	}
 
 	meta, err := s.tr.ReadResultMeta(columnCount, s.version)
 	if err != nil {
-		return 0, fmt.Errorf("h2go: readGeneratedKeysLastInsertID: failed to read metadata: %w", err)
+		return nil, 0, fmt.Errorf("h2go: readGeneratedKeys: failed to read metadata: %w", err)
 	}
 
-	if columnCount != 1 || rowCount != 1 {
-		if err := s.discardGeneratedKeyRows(meta, rowCount); err != nil {
-			return 0, err
+	// Build the result.
+	result := &GeneratedKeysResult{
+		Columns: meta.ColumnNames(),
+	}
+
+	// Read all rows.
+	if rowCount > 0 {
+		result.Rows = make([][]driver.Value, 0, rowCount)
+		for i := int64(0); i < rowCount; i++ {
+			row, err := s.readGeneratedKeyRow(meta)
+			if err != nil {
+				// ioEOF means the server signalled end-of-result early
+				// (fewer rows than advertised). Stop reading.
+				if _, ok := err.(ioEOF); ok {
+					break
+				}
+				return nil, 0, err
+			}
+			result.Rows = append(result.Rows, row)
 		}
-		return 0, lastInsertIDUnavailableError("H2 returned %d generated key column(s) across %d row(s)",
-			columnCount, rowCount)
+	} else if rowCount < 0 {
+		// rowCount < 0: eager result, read until ioEOF.
+		for {
+			row, err := s.readGeneratedKeyRow(meta)
+			if err != nil {
+				if _, ok := err.(ioEOF); ok {
+					break
+				}
+				return nil, 0, err
+			}
+			result.Rows = append(result.Rows, row)
+		}
+	} else {
+		// rowCount <= 0: no rows, but read possible end-of-row marker.
+		// H2's sendRows with count <= 0 exits immediately, so there is no
+		// marker to consume.
 	}
 
-	row, err := s.readGeneratedKeyRow(meta)
-	if err != nil {
-		return 0, err
-	}
-	if len(row) != 1 {
-		return 0, lastInsertIDUnavailableError("H2 returned %d generated key value(s)", len(row))
-	}
+	// Try to extract the single numeric LastInsertID.
+	lastInsertID, idErr := result.SingleInt64()
+	return result, lastInsertID, idErr
+}
 
-	id, err := generatedKeyValueToInt64(row[0])
-	if err != nil {
+// readGeneratedKeysLastInsertID consumes the generated-keys result set that
+// follows an update response and, when possible, extracts a single numeric key
+// suitable for driver.Result.LastInsertId().
+//
+// Deprecated: Use readGeneratedKeys instead, which returns both the full
+// result and the single numeric key.
+func (s *Session) readGeneratedKeysLastInsertID() (int64, error) {
+	_, id, err := s.readGeneratedKeys()
+	if err != nil && !isLastInsertIDUnavailable(err) {
 		return 0, err
 	}
 	return id, nil
@@ -79,7 +136,7 @@ func (s *Session) readGeneratedKeyRow(meta *ResultMeta) ([]driver.Value, error) 
 		}
 		return row, nil
 	case 0:
-		return nil, lastInsertIDUnavailableError("H2 returned no generated key row")
+		return nil, ioEOF{}
 	case -1:
 		return nil, wrapError("readGeneratedKeyRow", readH2Error(s.tr))
 	default:
@@ -88,11 +145,6 @@ func (s *Session) readGeneratedKeyRow(meta *ResultMeta) ([]driver.Value, error) 
 }
 
 func (s *Session) discardGeneratedKeyRows(meta *ResultMeta, rowCount int64) error {
-	// H2's sendRows(result, count) with count <= 0 exits its while-loop
-	// immediately and writes no row bytes at all.
-	// rowCount = 0  → INSERT affected 0 rows, or DELETE/UPDATE with no keys.
-	// rowCount < 0  → should not happen for LocalResult generated-key results,
-	//                 but treat defensively: no bytes to consume.
 	if rowCount <= 0 {
 		return nil
 	}
@@ -123,12 +175,6 @@ func (s *Session) discardGeneratedKeyRows(meta *ResultMeta, rowCount int64) erro
 		}
 	}
 
-	if rowCount < 0 {
-		// rowCount < 0 is already excluded by the rowCount <= 0 guard above.
-		// This branch is unreachable but kept for clarity.
-		return nil
-	}
-
 	for i := int64(0); i < rowCount; i++ {
 		err := readRow()
 		if err == nil {
@@ -153,6 +199,10 @@ func lastInsertIDUnavailableError(format string, args ...any) error {
 		return fmt.Errorf("h2go: LastInsertId: %w", ErrLastInsertIDUnavailable)
 	}
 	return fmt.Errorf("h2go: LastInsertId: "+format+": %w", append(args, ErrLastInsertIDUnavailable)...)
+}
+
+func isLastInsertIDUnavailable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), ErrLastInsertIDUnavailable.Error())
 }
 
 func generatedKeyValueToInt64(v driver.Value) (int64, error) {
