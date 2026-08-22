@@ -459,7 +459,7 @@ The first production target must support these common H2 types. All result value
 | `GEOMETRY` | `[]byte` (raw WKB-like bytes) |
 | `JAVA_OBJECT` | `[]byte` (raw serialized bytes) |
 | `ENUM` | `int64` (ordinal value) |
-| `INTERVAL` | `string` (human-readable interval text) |
+| `INTERVAL` | `string` (H2's canonical interval text) |
 | `ARRAY` | `string` (comma-separated elements in brackets) |
 | `ROW` | `string` (comma-separated fields in parentheses) |
 

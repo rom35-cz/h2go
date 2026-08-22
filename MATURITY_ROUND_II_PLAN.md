@@ -196,6 +196,39 @@ text" (one sentence; no format dump needed).
 `CAST(<same expression> AS VARCHAR)` for 10+ expressions is identical; finding
 2 retraction noted (already in MATURITY_ROUND_II.md), finding 3 marked resolved.
 
+**Status: DONE** (2026-08-22). Implementation notes:
+- `formatInterval` now mirrors H2's exact algorithm, transcribed from the
+  reference source (`h2-src/org/h2/util/IntervalUtils.java` `appendInterval` +
+  `DateTimeUtils.java` `appendNanos`): sign prefixes the leading field only;
+  leading fields are never padded (`'2:03'`, `'100:03:04.5'`); sub-fields of
+  compound qualifiers are two-digit padded (`'2 03'`, `'0 00:00:00'`); every
+  `* TO SECOND` qualifier carries its whole time part as nanos in `remaining`
+  (not plain seconds); fraction rendering is a dot plus nine digits with
+  trailing zeros trimmed, omitted entirely when nanos == 0.
+- Helper `formatIntervalNanos` implements `appendNanos` as `%09d` +
+  `strings.TrimRight("0")` — verified equivalent to Java's division-based
+  trimming because leading zeros are emitted before trimming and never removed.
+  A separate `trimTrailingZeros` helper proved unnecessary.
+- `readIntervalValue` untouched, per plan. Known pre-existing caveat (now
+  documented): the wire's negation flag is folded into `leading`'s sign at
+  decode time, so a negative interval whose leading field is 0 (e.g.
+  `-INTERVAL '0 00:00:01'`) would lose its sign; not reachable through any
+  probed engine output path. Revisit only if a real query shape requires it.
+- Golden matrix: 30 expressions live-probed via H2 Shell on 2026-08-22,
+  confirming all previously unverified rows: `'7' SECOND` → `'7'`; zero-day
+  DAY TO SECOND keeps its `'0 '` leading field; zero-hour HOUR TO SECOND →
+  `'0:03:04'`; hours ≥ 100 stay unpadded (`'100:03:04.567890123'`).
+- Tests: `interval_test.go` — `TestFormatIntervalCanonicalMatrix` (33 golden
+  cases across every qualifier) and `TestReadIntervalValueWireSigns` (5
+  synthetic frames including complement-encoded negative ordinals);
+  `TestIntegration_IntervalCanonicalMatrix` performs the Done-when live check
+  permanently (18 driver-vs-CAST comparisons, all identical).
+- Docs: README supported-types row split so INTERVAL reads "Decoded as H2's
+  canonical interval text"; PRD §7.14 row now says "H2's canonical interval
+  text". Finding 3's inline resolution marker lands with the Task 10 sweep.
+- Validation: build, vet, gofmt, lint (0 issues), unit+race,
+  integration+race, CGO-free build — all green.
+
 ---
 
 ## Task 3 — Public access to full generated-keys results (finding 4)

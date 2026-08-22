@@ -107,7 +107,8 @@ The driver focuses on the MVP scalar set used by the test suite:
 | `BINARY`, `VARBINARY`, `BLOB` | `[]byte` | Raw bytes; inline BLOBs only, larger BLOBs fetched on demand via `LOB_READ` |
 | `JSON`, `GEOMETRY`, `JAVA_OBJECT` | `[]byte` | Raw bytes |
 | `ENUM` | `int64` | Ordinal value |
-| `INTERVAL`, `ARRAY`, `ROW` | `string` | Text representation |
+| `INTERVAL` | `string` | Decoded as H2's canonical interval text |
+| `ARRAY`, `ROW` | `string` | Text representation |
 | `NULL` | `nil` | Preserved as database null |
 
 Unsupported H2 types return a clear error or a documented fallback value.

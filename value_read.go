@@ -309,29 +309,75 @@ func intervalQualifier(ordinal int) intervalQual {
 	}
 }
 
-// formatInterval renders an interval value as a human-readable string.
+// formatInterval renders an interval value exactly like H2's canonical
+// interval text (IntervalUtils.appendInterval in combination with
+// DateTimeUtils.appendNanos, verified against CAST(... AS VARCHAR) on live
+// H2 2.4.240):
+//   - the sign, when present, prefixes the leading field only;
+//   - leading fields are never zero-padded ('2:03', '1-6', '100:03:04.5');
+//   - sub-fields of compound qualifiers are two-digit padded ('2 03');
+//   - fractional seconds use up to nine digits with trailing zeros trimmed;
+//     an integral seconds value has no fraction at all ('7', '1 02:03:04').
+//
+// Units per qualifier follow ValueInterval/Transfer.writeValue: SECOND leads
+// seconds with nanos remaining; DAY TO HOUR/MINUTE carry plain hours/minutes
+// as remaining; every * TO SECOND carries the whole time part in nanos.
 func formatInterval(qualifier string, leading, remaining int64) string {
-	switch qualifier {
-	case "YEAR TO MONTH":
-		return fmt.Sprintf("INTERVAL '%d-%d' YEAR TO MONTH", leading, remaining)
-	case "DAY TO HOUR":
-		return fmt.Sprintf("INTERVAL '%d %d' DAY TO HOUR", leading, remaining)
-	case "DAY TO MINUTE":
-		return fmt.Sprintf("INTERVAL '%d %d:%d' DAY TO MINUTE", leading, remaining/60, remaining%60)
-	case "HOUR TO MINUTE":
-		return fmt.Sprintf("INTERVAL '%d:%d' HOUR TO MINUTE", leading, remaining)
-	case "SECOND", "DAY TO SECOND", "HOUR TO SECOND", "MINUTE TO SECOND":
-		secs := remaining / 1_000_000_000
-		nanos := remaining % 1_000_000_000
-		if nanos > 0 {
-			return fmt.Sprintf("INTERVAL '%d %d.%09d' %s", leading, secs, nanos, qualifier)
-		}
-		return fmt.Sprintf("INTERVAL '%d %d' %s", leading, secs, qualifier)
-	case "YEAR", "MONTH", "DAY", "HOUR", "MINUTE":
-		return fmt.Sprintf("INTERVAL '%d' %s", leading, qualifier)
-	default:
-		return fmt.Sprintf("INTERVAL '%d' %s", leading, qualifier)
+	neg := ""
+	if leading < 0 {
+		neg = "-"
+		leading = -leading
 	}
+	switch qualifier {
+	case "YEAR", "MONTH", "DAY", "HOUR", "MINUTE":
+		return fmt.Sprintf("INTERVAL '%s%d' %s", neg, leading, qualifier)
+	case "SECOND":
+		return fmt.Sprintf("INTERVAL '%s%d%s' SECOND", neg, leading, formatIntervalNanos(remaining))
+	case "YEAR TO MONTH":
+		return fmt.Sprintf("INTERVAL '%s%d-%d' YEAR TO MONTH", neg, leading, remaining)
+	case "DAY TO HOUR":
+		return fmt.Sprintf("INTERVAL '%s%d %02d' DAY TO HOUR", neg, leading, remaining)
+	case "DAY TO MINUTE":
+		return fmt.Sprintf("INTERVAL '%s%d %02d:%02d' DAY TO MINUTE", neg, leading, remaining/60, remaining%60)
+	case "DAY TO SECOND":
+		minutes := remaining / intervalNanosPerMinute
+		nanos := remaining % intervalNanosPerMinute
+		return fmt.Sprintf("INTERVAL '%s%d %02d:%02d:%02d%s' DAY TO SECOND",
+			neg, leading, minutes/60, minutes%60,
+			nanos/intervalNanosPerSecond, formatIntervalNanos(nanos%intervalNanosPerSecond))
+	case "HOUR TO MINUTE":
+		return fmt.Sprintf("INTERVAL '%s%d:%02d' HOUR TO MINUTE", neg, leading, remaining)
+	case "HOUR TO SECOND":
+		minutes := remaining / intervalNanosPerMinute
+		secPart := remaining % intervalNanosPerMinute
+		return fmt.Sprintf("INTERVAL '%s%d:%02d:%02d%s' HOUR TO SECOND",
+			neg, leading, minutes, secPart/intervalNanosPerSecond,
+			formatIntervalNanos(secPart%intervalNanosPerSecond))
+	case "MINUTE TO SECOND":
+		return fmt.Sprintf("INTERVAL '%s%d:%02d%s' MINUTE TO SECOND",
+			neg, leading, remaining/intervalNanosPerSecond,
+			formatIntervalNanos(remaining%intervalNanosPerSecond))
+	default:
+		return fmt.Sprintf("INTERVAL '%s%d' %s", neg, leading, qualifier)
+	}
+}
+
+// Sub-field units used by formatInterval (NANOS_PER_SECOND / NANOS_PER_MINUTE
+// in IntervalUtils.java).
+const (
+	intervalNanosPerSecond = int64(1_000_000_000)
+	intervalNanosPerMinute = 60 * intervalNanosPerSecond
+)
+
+// formatIntervalNanos renders a sub-second nanos value the way
+// DateTimeUtils.appendNanos does for canonical interval text: nothing at all
+// when it is zero, otherwise a dot followed by nine digits with trailing zeros
+// trimmed ('.5', '.25', '.000000001').
+func formatIntervalNanos(nanos int64) string {
+	if nanos <= 0 {
+		return ""
+	}
+	return "." + strings.TrimRight(fmt.Sprintf("%09d", nanos), "0")
 }
 
 // nestedLOBs is passed while decoding values nested inside ARRAY/ROW

@@ -1897,6 +1897,54 @@ func TestIntegration_GeneratedKeysWithLob(t *testing.T) {
 	}
 }
 
+// TestIntegration_IntervalCanonicalMatrix compares the driver's INTERVAL
+// decoding against H2's own canonical text (CAST(... AS VARCHAR)) for every
+// qualifier, live (MATURITY_ROUND_II_PLAN.md Task 2, finding 3).
+func TestIntegration_IntervalCanonicalMatrix(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	tests := []struct {
+		expr   string
+		golden string
+	}{
+		{"INTERVAL '5.25' SECOND", "INTERVAL '5.25' SECOND"},
+		{"INTERVAL '7.750000000' SECOND", "INTERVAL '7.75' SECOND"},
+		{"INTERVAL '7' SECOND", "INTERVAL '7' SECOND"},
+		{"-INTERVAL '5.25' SECOND", "INTERVAL '-5.25' SECOND"},
+		{"INTERVAL '1 02:03:04.5' DAY TO SECOND", "INTERVAL '1 02:03:04.5' DAY TO SECOND"},
+		{"INTERVAL '1 02:03:04.000000001' DAY TO SECOND", "INTERVAL '1 02:03:04.000000001' DAY TO SECOND"},
+		{"INTERVAL '0 00:00:00' DAY TO SECOND", "INTERVAL '0 00:00:00' DAY TO SECOND"},
+		{"-INTERVAL '1 02:03:04.5' DAY TO SECOND", "INTERVAL '-1 02:03:04.5' DAY TO SECOND"},
+		{"INTERVAL '23:59:59.999999999' HOUR TO SECOND", "INTERVAL '23:59:59.999999999' HOUR TO SECOND"},
+		{"-INTERVAL '2:03:04.5' HOUR TO SECOND", "INTERVAL '-2:03:04.5' HOUR TO SECOND"},
+		{"INTERVAL '100:03:04.567890123' HOUR TO SECOND", "INTERVAL '100:03:04.567890123' HOUR TO SECOND"},
+		{"INTERVAL '3:04.5' MINUTE TO SECOND", "INTERVAL '3:04.5' MINUTE TO SECOND"},
+		{"INTERVAL '2 3' DAY TO HOUR", "INTERVAL '2 03' DAY TO HOUR"},
+		{"-INTERVAL '2 3:05' DAY TO MINUTE", "INTERVAL '-2 03:05' DAY TO MINUTE"},
+		{"INTERVAL '2:03' HOUR TO MINUTE", "INTERVAL '2:03' HOUR TO MINUTE"},
+		{"INTERVAL '0-1' YEAR TO MONTH", "INTERVAL '0-1' YEAR TO MONTH"},
+		{"-INTERVAL '1-6' YEAR TO MONTH", "INTERVAL '-1-6' YEAR TO MONTH"},
+		{"INTERVAL '42' DAY", "INTERVAL '42' DAY"},
+	}
+
+	for _, tc := range tests {
+		var got string
+		if err := db.QueryRowContext(ctx,
+			"SELECT CAST("+tc.expr+" AS VARCHAR)").Scan(&got); err != nil {
+			t.Errorf("%s: query: %v", tc.expr, err)
+			continue
+		}
+		if got != tc.golden {
+			t.Errorf("%s: driver decoded %q, H2 canonical is %q", tc.expr, got, tc.golden)
+		}
+	}
+}
+
 // TestIntegration_NullDecoding verifies NULL values decode to nil across types.
 func TestIntegration_NullDecoding(t *testing.T) {
 	env := integrationEnv(t)
