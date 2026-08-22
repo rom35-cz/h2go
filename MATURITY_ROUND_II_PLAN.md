@@ -1,8 +1,10 @@
 # MATURITY_ROUND_II_PLAN.md — Fix Plan for Round II Maturity Findings
 
-Date: 2026-08-22
+Date: 2026-08-22 (reviewed and corrected same day)
 Source: `MATURITY_ROUND_II.md` findings (P1/P2/P3, with finding 2 retracted by
-re-verification against H2's canonical interval text)
+re-verification against H2's canonical interval text). Finding 19
+(context-deadline race) was discovered and fixed after this plan was drafted
+(commit `7a8c6f7`); it needs no task here, only a resolution marker in Task 10.
 Target: H2 **2.4.240+**, native TCP protocol **21** only
 Rule: Tasks run **strictly in order**; every task ends green (`go build ./...`,
 `go vet ./...`, `go test ./...`, and integration tests with a live H2 server).
@@ -58,8 +60,11 @@ single-row shape.
   walk the pending list **in wire order** and run the existing chunk loop
   (`lobReadChunkSize = 16*4096`, status=1 → len → raw bytes, stop at 0) for
   each LOB. Splice resolved values back into the buffered rows. Resolution
-  errors: make the error sticky on the Rows **and mark the session dead**
-  (see Task 5 mechanics) so the pool discards the conn.
+  errors: make the error sticky on the Rows **and call `Session.Abort()`
+  directly** — the existing API already sets the session's `dead` flag and
+  aborts the transport, which is all that is needed for the pool to discard
+  the conn. (Task 5 later generalizes this dead-marking to *all* mid-stream
+  decode errors; this task must not wait on it.)
 - `readGeneratedKeys`/`readGeneratedKeyRow`: same collect-then-resolve pattern
   after the keys frame (all rows) has been fully consumed.
 - ARRAY/ROW containers: if a fetch-on-demand LOB appears *nested inside* an
@@ -80,8 +85,11 @@ single-row shape.
   - multiple rows of one CLOB column (the "16777216" shape);
   - LOB followed by a scalar column (`SELECT c, id`);
   - mixed inline + on-demand LOBs in one row;
-  - batch boundary crossing: LOB in row N of a multi-batch result
-    (fetchSize smaller than row count);
+  - batch boundary crossing: LOB in row N of a multi-batch result. There is
+    no per-statement fetch-size control (`driver.Stmt` has no SetFetchSize
+    here); build a dedicated handle with a small batch via
+    `ParseDSN(...)` + `cfg.FetchSize = 1` + `sql.OpenDB(NewConnector(cfg))`
+    and select more rows than one batch holds;
   - single-column single-row regression (existing case must stay green).
 - Integration: generated keys frame containing a fetch-on-demand LOB returns
   the value (numeric default path unchanged).
@@ -101,17 +109,23 @@ driver already matches byte-for-byte. Finding 3 remains: the seconds-bearing
 qualifiers and hour padding are wrong. Verified H2 canonical matrix
 (`SELECT CAST(<expr> AS VARCHAR)` on live H2 2.4.240):
 
+Wire layout reminder: single-field SECOND is ordinal 5, so it carries BOTH
+longs on the wire — leading = whole seconds, remaining = nanos.
+
 | Expression | H2 canonical text |
 |---|---|
 | `INTERVAL '5.25' SECOND` | `INTERVAL '5.25' SECOND` |
 | `INTERVAL '7.750000000' SECOND` | `INTERVAL '7.75' SECOND` (trailing zeros trimmed) |
+| `INTERVAL '7' SECOND` (probe to confirm) | `'7'` — nanos = 0 ⇒ plain integer, no fraction |
 | `INTERVAL '0.5' SECOND` | `INTERVAL '0.5' SECOND` |
 | `-INTERVAL '5.25' SECOND` | `INTERVAL '-5.25' SECOND` |
 | `INTERVAL '1 02:03:04.5' DAY TO SECOND` | `INTERVAL '1 02:03:04.5' DAY TO SECOND` |
 | `INTERVAL '1 02:03:04.0' DAY TO SECOND` | `INTERVAL '1 02:03:04' DAY TO SECOND` (nanos=0 ⇒ no fraction) |
 | `INTERVAL '0 00:00:00' DAY TO SECOND` | `INTERVAL '0 00:00:00' DAY TO SECOND` (always 2-digit) |
 | `-INTERVAL '1 02:03:04.5' DAY TO SECOND` | `INTERVAL '-1 02:03:04.5' DAY TO SECOND` |
+| `INTERVAL '0 02:03:04.5' DAY TO SECOND` (probe to confirm) | zero days still prints `'0 ...'` leading field |
 | `INTERVAL '23:59:59.999999999' HOUR TO SECOND` | `INTERVAL '23:59:59.999999999' HOUR TO SECOND` |
+| `INTERVAL '0:03:04' HOUR TO SECOND` (probe to confirm) | zero hours unpadded: `'0:03:04'` |
 | `INTERVAL '2:03:04.5' HOUR TO SECOND` | `INTERVAL '2:03:04.5' HOUR TO SECOND` |
 | `-INTERVAL '2:03:04.5' HOUR TO SECOND` | `INTERVAL '-2:03:04.5' HOUR TO SECOND` |
 | `INTERVAL '3:04.5' MINUTE TO SECOND` | `INTERVAL '3:04.5' MINUTE TO SECOND` |
@@ -162,15 +176,31 @@ internal test's `db.Conn` + `conn.Raw()` + type assertion to `*result`
 (impossible outside the package). README/CHANGELOG advertise it as accessible
 — misleading.
 
-**Work (`result.go`):** add an exported interface implemented by `*result`:
+**Critical access constraint:** `database/sql` wraps every driver result in
+its unexported `driverResult` type before returning it as `sql.Result`, so
+`res.(h2go.GeneratedKeysProvider)` on a result from `db.Exec(...)` **can never
+succeed**. The assertion works only on a driver-level `driver.Result` obtained
+via `sql.Conn.Raw()`:
+
+```go
+sqlConn, _ := db.Conn(ctx)
+defer sqlConn.Close()
+dc := sqlConn.Raw() // driver.Conn is *h2go.conn (implements driver.ExecerContext)
+res, err := dc.(driver.ExecerContext).ExecContext(ctx,
+    "INSERT INTO t(x) VALUES (1)", nil)
+if gkp, ok := res.(h2go.GeneratedKeysProvider); ok {
+    keys := gkp.GetGeneratedKeys()
+}
+```
+
+**Work (`result.go`):** add an exported interface implemented by `*result`,
+with its doc comment steering users to the working pattern above:
 
 ```go
 // GeneratedKeysProvider is implemented by driver.Result values returned by
-// h2go when generated keys were requested. Access the full multi-column /
-// multi-row key result via:
-//
-//   r, ok := res.(h2go.GeneratedKeysProvider)
-//   keys := r.GetGeneratedKeys()
+// h2go when generated keys were requested. Obtain the driver.Result via
+// sql.Conn.Raw() plus a direct ExecContext call — results from database/sql's
+// Exec/ExecContext are wrapped and do not expose this interface.
 type GeneratedKeysProvider interface {
     GetGeneratedKeys() *GeneratedKeysResult
 }
@@ -181,12 +211,15 @@ Wire it through `conn.ExecContext` / `stmt.ExecContext` (already carried on
 
 **Tests:** new package-external test (a `package h2go_test` file, e.g.
 `generated_keys_external_test.go`, build-tagged `integration`) doing
-`db.Conn` + `driver.Conn` exec + `sql.Result.(h2go.GeneratedKeysProvider)`
-assertion, proving reachability from outside the package. Unit-level interface
-compliance assertion (`var _ GeneratedKeysProvider = (*result)(nil)`).
+`db.Conn` + `Raw()` + direct driver-level `ExecContext` +
+`driver.Result.(h2go.GeneratedKeysProvider)` assertion, proving reachability
+from outside the package. Unit-level interface compliance assertion
+(`var _ GeneratedKeysProvider = (*result)(nil)`).
 
-**Docs:** README "Limitations" bullet now shows the actual assertion snippet;
-CHANGELOG wording corrected (drop "on the driver's Result type" phrasing).
+**Docs:** README "Limitations" bullet shows the working Raw()-based snippet
+and explicitly warns that `sql.Result` from `db.Exec` does NOT expose the
+interface (database/sql wraps results); CHANGELOG wording corrected (drop
+"on the driver's Result type" phrasing).
 
 **Done when:** external-package test passes; docs snippet compiles.
 
@@ -207,7 +240,9 @@ BLOB branch (`make([]byte, length)` from an unbounded int64 — worst case).
 - Add one shared guard constant/helper, e.g. `maxWireCollectionElements = 1 << 20`
   (1,048,576 elements/rows — far beyond any legitimate ARRAY/ROW/generated-keys
   payload), with a clear error naming the cap and the field. Apply to:
-  ARRAY length, ROW length, generated-keys rowCount.
+  ARRAY length, ROW length, generated-keys rowCount. Compare against the cap
+  **as int64 before any int conversion** (generated-keys rowCount arrives as
+  int64; converting first would overflow on 32-bit platforms).
 - Inline BLOB: reject `length > MaxWireLength` before `make`, mirroring
   `ReadBytes` (same cap, same error style).
 - Inline CLOB: keep a cap but make it consistent with `MaxWireLength`, and do
@@ -258,8 +293,9 @@ fails later); make it deterministic and immediate.
 
 **Tests:**
 - Unit (synthetic/mock `Tr`): a `Tr` that fails mid-column → session dead;
-  subsequent `acquire` → `ErrBadConn`; `Rows.Next` after error returns the
-  sticky error, `Rows.Close` performs no transport writes.
+  subsequent borrow of the conn fails (`ResetSession` returns
+  `driver.ErrBadConn`, so `database/sql` discards it); `Rows.Next` after error
+  returns the sticky error, `Rows.Close` performs no transport writes.
 - Unit: aligned H2-error frame (`case -1`) does **not** mark the session dead.
 - Integration: after the (fixed, previously failing) multi-column LOB query,
   the pool continues serving correct results on other queries (behavioral
@@ -286,8 +322,8 @@ despite `IFEXISTS=TRUE`).
   (`IFEXISTS`, `AUTO_SERVER`, `ACCESS_MODE_DATA`); recommendation to validate
   manually for now. Same short note in `doc.go`.
 - `connector.Connect` (or `HandshakeContext`): when `len(cfg.Params) > 0`,
-  emit one `slog.LevelDebug` record listing parameter keys (values redacted
-  via `sanitizeAttr`, matching existing redaction rules).
+  emit one `slog.LevelDebug` record listing parameter **keys only** — values
+  are never logged, so no redaction machinery is needed.
 
 **Tests:** none behavioral; run DSN unit tests (unchanged) and confirm the
 debug log appears with keys only when a logger is configured.
@@ -333,8 +369,9 @@ ARRAY NULL-element rendering is unpinned.
 - `TestIntegration_ComplexTypeDecoding`: replace weak INTERVAL assertions with
   golden strings from the Task 2 matrix (positive/negative, fractional,
   zero-padding); assert ENUM ordinal exact value; assert ROW text exact;
-  assert ARRAY output exact for a case including `NULL` (lock
-  `"[a,b,c,<nil>]"` — see Task 9's documentation decision).
+  assert ARRAY output exact for a case including `NULL` — decision made HERE:
+  lock `"[a,b,c,<nil>]"` as the pinned rendering (Task 9 documents it in the
+  README, but the behavior contract is owned by this task's assertion).
 - `TestIntegration_FetchOnDemandLOB`: keep the shapes added in Task 1 and add
   an assertion that a second query on the same `*sql.DB` after a large-LOB
   read still returns correct data (pool sanity after the fix).
@@ -358,12 +395,13 @@ Round II failure shapes (see audit) are each covered by a named test.
   `lastInsertIDUnavailableError`); delete the helper or keep it as a thin
   `errors.Is` wrapper.
 - **Finding 12**: remove dead code — `Session.discardGeneratedKeyRows` and
-  `Session.readGeneratedKeysLastInsertID` (zero callers); delete their
-  references if any test uses them (grep first). Run `gofmt -l` and fix all
-  files (`protocol.go`, `value_read.go`, `value_read_test.go`, and any file
-  touched by earlier tasks). Add a `fmt` / `fmt-check` target to `Makefile`
-  that fails on `gofmt -l` output, and note in the Makefile comment that
-  `make lint` requires `golangci-lint` (silently skips when absent).
+  `Session.readGeneratedKeysLastInsertID` (verified zero callers; grep again
+  before deleting in case Tasks 1–5 added one). The gofmt drift in
+  `protocol.go` / `value_read.go` / `value_read_test.go` and the staticcheck
+  findings were already fixed in commit `7a8c6f7` — this task only adds the
+  guard rail: a `fmt` / `fmt-check` target in `Makefile` that fails on
+  `gofmt -l` output, and a Makefile comment noting that `make lint` requires
+  `golangci-lint` (silently skips when absent).
 - **Finding 10** (README): document ARRAY rendering exactly — elements
   comma-joined with `%v`; NULL elements render as `<nil>`; document ROW
   similarly. (Task 8 pins it with an assertion.)
@@ -399,7 +437,8 @@ unit suite green; docs updated.
   documented limitations added in Tasks 6/7/9.
 - Mark `MATURITY_ROUND_II.md` findings resolved inline (status line in each
   finding, mirroring the Round I convention), incl. the retraction already
-  recorded for finding 2.
+  recorded for finding 2 and the addendum marker for finding 19 (already
+  fixed in commit `7a8c6f7`).
 - Final verification matrix (all green against a freshly seeded local H2):
 
 ```
