@@ -84,3 +84,9 @@ Integration tests should skip cleanly when required env vars are absent.
 - Use Conventional Commits for commit messages.
 - Use semantic versioning for release tags.
 - Before any release, update `CHANGES.txt` or `CHANGELOG.md` consistently with the release process chosen for the repository.
+- **GitHub account check before pushing:** this is a home project owned by
+  the `rom35-cz` account. The machine also has a work account
+  (`roman-majer_o2cz`) logged in via `gh`. Before every push, run
+  `gh auth status` and check which account is active; if it is
+  `roman-majer_o2cz`, run `gh auth switch --user rom35-cz` (no sudo needed)
+  so the push has access to the remote repository.
