@@ -2302,7 +2302,11 @@ func TestIntegration_ConnectionPoolStress(t *testing.T) {
 	db.SetMaxOpenConns(2)
 	db.SetMaxIdleConns(2)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Generous ceilings: this test verifies pool-safety and concurrency
+	// correctness, not latency. Under -race on shared CI runners (2 vCPU,
+	// alongside the Java servers) round trips can be an order of magnitude
+	// slower than local runs.
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	const workers = 4
@@ -2315,7 +2319,7 @@ func TestIntegration_ConnectionPoolStress(t *testing.T) {
 		go func(worker int) {
 			defer wg.Done()
 			for iter := 0; iter < iterations; iter++ {
-				iterCtx, iterCancel := context.WithTimeout(ctx, 5*time.Second)
+				iterCtx, iterCancel := context.WithTimeout(ctx, 20*time.Second)
 				conn, err := db.Conn(iterCtx)
 				if err != nil {
 					iterCancel()
