@@ -6,6 +6,13 @@ All notable changes to `h2go` will be documented in this file.
 
 ### Added
 
+- Per-statement generated-keys overrides: `ContextWithGeneratedKeys` /
+  `ContextWithoutGeneratedKeys` attach a `GeneratedKeysRequest` to an
+  `ExecContext` context; that request wins over the connection-level
+  `Config.GeneratedKeysMode` family for exactly one statement (unknown
+  override modes fall back to the configuration). This removes the previous
+  limitation of mixing generated-key behavior only via separate `*sql.DB`
+  handles.
 - Deep statement cancellation: context cancellation during a running query
   or update now fires H2's side-channel `SESSION_CANCEL_STATEMENT` and waits
   for the server's aligned "statement was canceled" report (vendor code

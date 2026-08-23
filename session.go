@@ -340,9 +340,12 @@ func (s *Session) ExecuteUpdatePreparedWithParams(ctx context.Context, cmd *Prep
 	}
 
 	// Request generated keys so Result.LastInsertId can be populated when H2
-	// returns exactly one numeric generated key. The helper below will consume
-	// the generated-keys result and convert it into a driver.Result field.
-	genKeysMode := s.generatedKeysMode()
+	// returns exactly one numeric generated key. The mode is resolved from a
+	// per-statement context override (see ContextWithGeneratedKeys) or, in
+	// its absence, from the connection-level configuration. The helper below
+	// will consume the generated-keys result and convert it into a
+	// driver.Result field.
+	genKeysMode, genKeysCols, genKeysNames := s.resolveGeneratedKeys(ctx)
 	if err = s.tr.WriteInt32(genKeysMode); err != nil {
 		return nil, wrapError("ExecuteUpdatePreparedWithParams", err)
 	}
@@ -350,7 +353,7 @@ func (s *Session) ExecuteUpdatePreparedWithParams(ctx context.Context, cmd *Prep
 	// For column-number and column-name modes, write the selector data.
 	switch genKeysMode {
 	case GeneratedKeysColumnNumbers:
-		cols := s.cfg.GeneratedKeysColumns
+		cols := genKeysCols
 		if cols == nil {
 			cols = []int{}
 		}
@@ -364,7 +367,7 @@ func (s *Session) ExecuteUpdatePreparedWithParams(ctx context.Context, cmd *Prep
 		}
 
 	case GeneratedKeysColumnNames:
-		names := s.cfg.GeneratedKeysColumnNames
+		names := genKeysNames
 		if names == nil {
 			names = []string{}
 		}

@@ -2669,3 +2669,102 @@ func TestIntegration_StatementCancellation(t *testing.T) {
 		t.Fatalf("ping after cancellation: %v", err)
 	}
 }
+
+// TestIntegration_PerStatementGeneratedKeys verifies per-statement
+// generated-keys overrides (post-v0.2.0 backlog item #7): a request attached
+// to ExecContext's context wins over the connection-level configuration for
+// exactly that statement, including suppressing keys entirely, requesting
+// specific columns by name at the driver level, and not leaking into
+// subsequent statements.
+func TestIntegration_PerStatementGeneratedKeys(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	table := "gk_probe_" + uuid.NewString()[:8]
+	if _, err := db.ExecContext(ctx,
+		"CREATE TABLE "+table+"(id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100))"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer func() { _, _ = db.ExecContext(ctx, "DROP TABLE "+table) }()
+
+	// 1. Default (auto): LastInsertId available.
+	res, err := db.ExecContext(ctx, "INSERT INTO "+table+"(name) VALUES (?)", "auto")
+	if err != nil {
+		t.Fatalf("default exec: %v", err)
+	}
+	id1, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("default exec LastInsertId: %v", err)
+	}
+	if id1 <= 0 {
+		t.Errorf("default exec LastInsertId = %d, want > 0", id1)
+	}
+
+	// 2. Per-statement suppression on an auto-configured connection.
+	suppressed := ContextWithoutGeneratedKeys(ctx)
+	res, err = db.ExecContext(suppressed, "INSERT INTO "+table+"(name) VALUES (?)", "none")
+	if err != nil {
+		t.Fatalf("suppressed exec: %v", err)
+	}
+	if _, lastErr := res.LastInsertId(); !errors.Is(lastErr, ErrLastInsertIDUnavailable) {
+		t.Errorf("suppressed exec LastInsertId error = %v, want ErrLastInsertIDUnavailable", lastErr)
+	}
+
+	// 3. Column-names override, observed through the full generated-keys
+	// result via sql.Conn.Raw (database/sql wraps plain sql.Result).
+	sqlConn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer sqlConn.Close()
+	err = sqlConn.Raw(func(raw any) error {
+		execer, ok := raw.(driver.ExecerContext)
+		if !ok {
+			return errors.New("connection does not implement driver.ExecerContext")
+		}
+		overrideCtx := ContextWithGeneratedKeys(ctx, GeneratedKeysRequest{
+			Mode:  GeneratedKeysColumnNames,
+			Names: []string{"NAME"},
+		})
+		dres, derr := execer.ExecContext(overrideCtx,
+			"INSERT INTO "+table+"(name) VALUES (?)",
+			[]driver.NamedValue{{Ordinal: 1, Value: "by-name"}})
+		if derr != nil {
+			return derr
+		}
+		provider, ok := dres.(GeneratedKeysProvider)
+		if !ok {
+			return errors.New("result does not expose GeneratedKeysProvider")
+		}
+		keys := provider.GetGeneratedKeys()
+		if keys == nil {
+			return errors.New("generated keys result is nil")
+		}
+		if len(keys.Columns) != 1 || keys.Columns[0] != "NAME" {
+			return fmt.Errorf("keys columns = %v, want [NAME]", keys.Columns)
+		}
+		if len(keys.Rows) != 1 || len(keys.Rows[0]) != 1 {
+			return fmt.Errorf("keys rows = %v, want one single-column row", keys.Rows)
+		}
+		if got, _ := keys.Rows[0][0].(string); got != "by-name" {
+			return fmt.Errorf("key value = %v, want by-name", keys.Rows[0][0])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("column-names override: %v", err)
+	}
+
+	// 4. No leakage: the next default exec has auto keys again.
+	res, err = db.ExecContext(ctx, "INSERT INTO "+table+"(name) VALUES (?)", "after")
+	if err != nil {
+		t.Fatalf("post-override exec: %v", err)
+	}
+	if id3, lerr := res.LastInsertId(); lerr != nil || id3 <= 0 {
+		t.Errorf("post-override LastInsertId = %d, %v; want auto keys again", id3, lerr)
+	}
+}

@@ -90,8 +90,25 @@ The `Config.GeneratedKeysMode` family is **connection-level**: the mode (and
 its columns/names) applies to every update statement on every connection
 created from that `Config` — unlike JDBC, where the request is made per
 statement. To mix modes (e.g. one handle requesting keys and another not),
-create separate `*sql.DB` handles from separate configs. Per-statement
-overrides are future work.
+create separate `*sql.DB` handles from separate configs — or attach a
+**per-statement override** to the statement's context:
+
+```go
+// Request keys for this statement only (wins over Config for this call):
+ctx := h2go.ContextWithGeneratedKeys(ctx, h2go.GeneratedKeysRequest{
+    Mode:  h2go.GeneratedKeysColumnNames,
+    Names: []string{"ID"},
+})
+res, err := db.ExecContext(ctx, "INSERT INTO t(name) VALUES (?)", name)
+
+// Or suppress keys for a single statement (GeneratedKeysNone == 0 cannot be
+// expressed by omission):
+res, err = db.ExecContext(h2go.ContextWithoutGeneratedKeys(ctx),
+    "INSERT INTO t(name) VALUES (?)", name)
+```
+
+Overrides win over `Config`; an unknown override mode falls back to the
+connection configuration.
 
 Turning keys off requires the escape hatch below — `GeneratedKeysNone` is the
 zero value, so on its own it is indistinguishable from "default" (auto):
