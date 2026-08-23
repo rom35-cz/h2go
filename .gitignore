@@ -35,3 +35,6 @@ h2database/
 
 # Local working notes
 /TASKLIST.md
+
+# Local TLS test artifacts (generated)
+h2-data/tls/

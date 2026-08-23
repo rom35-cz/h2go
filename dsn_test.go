@@ -99,7 +99,8 @@ func TestParseDSN_UnsupportedScheme(t *testing.T) {
 	}{
 		{"mem", "jdbc:h2:mem:test", "unsupported H2 connection mode"},
 		{"file", "jdbc:h2:file:/tmp/test", "unsupported H2 connection mode"},
-		{"ssl", "jdbc:h2:ssl://localhost:9092/db", "unsupported H2 connection mode"},
+		// ssl:// is supported since TLS transport landed; it must parse with
+		// Config.TLS set (covered in TestParseDSNTLSSchemes).
 		{"unknown protocol", "jdbc:h2:ftp://localhost:9092/db", "unsupported H2 protocol"},
 	}
 	for _, tc := range cases {
@@ -352,7 +353,8 @@ func TestParseDSN_Native_UnsupportedScheme(t *testing.T) {
 		"http://localhost:9092/db",
 		"postgres://localhost:9092/db",
 		"jdbc:h2:mem:test",
-		"h2+ssl://localhost:9092/db",
+		// h2+ssl:// is supported since TLS transport landed; it must parse
+		// with Config.TLS set (covered in TestParseDSNTLSSchemes).
 	}
 	for _, input := range cases {
 		t.Run(input, func(t *testing.T) {

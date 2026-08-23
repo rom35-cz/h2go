@@ -112,8 +112,34 @@ For the full multi-column / multi-row key result, see the
 | JDBC-style | `jdbc:h2:tcp://localhost:9092/mydb` | Recommended for compatibility with existing H2 URLs |
 | Native | `h2://user:pass@localhost:9092/mydb` | Userinfo is supported |
 | Native (explicit TCP) | `h2+tcp://user:pass@localhost:9092/mydb` | Same wire protocol, explicit scheme |
+| JDBC-style TLS | `jdbc:h2:ssl://localhost:9093/mydb` | TLS transport, matching H2's `ssl://` scheme |
+| Native TLS | `h2+ssl://user:pass@localhost:9093/mydb` | TLS transport, native form |
 
 Default TCP port: `9092`.
+
+## TLS
+
+Servers started with the `-tcpSSL` flag speak TLS on their TCP port. The
+driver enables TLS automatically for `ssl://` DSNs (mirroring H2's own
+client) or programmatically via `Config.TLS`. Verification follows
+crypto/tls defaults and can be tuned per connection:
+
+```go
+cfg, _ := h2go.ParseDSN("jdbc:h2:ssl://localhost:9093/mydb")
+
+// Trust a private/self-signed CA instead of system roots:
+pool := x509.NewCertPool()
+pool.AppendCertsFromPEM(pemBytes)
+cfg.TLSRootCAs = pool
+
+// Optional overrides:
+//   cfg.TLSServerName        — verify against this name instead of Host
+//   cfg.TLSInsecureSkipVerify — disable verification (development only!)
+```
+
+The statement-cancel side channel uses the same TLS settings. Local test
+setup: `make db-tls` starts an H2 server with `-tcpSSL` on port 9093 using
+a generated self-signed certificate (`h2-data/tls/`, git-ignored).
 
 ## DSN parameters
 

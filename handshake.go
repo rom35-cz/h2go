@@ -55,6 +55,14 @@ func HandshakeContext(ctx context.Context, cfg *Config) (sess *Session, err erro
 		return nil, fmt.Errorf("h2go: dial %s: %w", addr, err)
 	}
 
+	if cfg.TLS {
+		conn, err = wrapTLS(ctx, conn, cfg)
+		if err != nil {
+			logConfig(cfg, slog.LevelError, "handshake tls failed", slog.Any("error", err))
+			return nil, fmt.Errorf("h2go: dial %s (tls): %w", addr, err)
+		}
+	}
+
 	tr := NewReadWriter(conn)
 	cleanup := beginOperationContext(ctx, tr, nil)
 	defer cleanup()

@@ -1,6 +1,7 @@
 package h2go
 
 import (
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -85,6 +86,28 @@ type Config struct {
 	// GeneratedKeysMode is GeneratedKeysColumnNames. Same connection-level
 	// scope as GeneratedKeysMode.
 	GeneratedKeysColumnNames []string
+
+	// TLS enables TLS for the transport. It is set automatically for DSNs
+	// using the ssl:// scheme (jdbc:h2:ssl://host:port/db, h2+ssl://...),
+	// mirroring H2's own client behavior, and can also be enabled
+	// programmatically for tcp:// DSNs that target a server started with
+	// the -tcpSSL flag.
+	TLS bool
+
+	// TLSServerName optionally overrides the hostname used for server
+	// certificate verification (and SNI). Empty means cfg.Host.
+	TLSServerName string
+
+	// TLSInsecureSkipVerify disables server certificate chain and hostname
+	// verification, like crypto/tls InsecureSkipVerify. Intended for local
+	// development servers with self-signed certificates; never disable in
+	// production.
+	TLSInsecureSkipVerify bool
+
+	// TLSRootCAs optionally supplies the certificate pool used to verify
+	// the server certificate. Nil uses the system roots. Useful for private
+	// CAs and self-signed test servers.
+	TLSRootCAs *x509.CertPool
 }
 
 // ParseDSN parses an H2 DSN string into a Config.
@@ -99,6 +122,12 @@ type Config struct {
 //	h2://user:password@host:port/database?k=v
 //	h2+tcp://user:password@host:port/database?k=v
 //
+// TLS DSNs use the same shapes with the ssl scheme, matching H2's own
+// client:
+//
+//	jdbc:h2:ssl://host:port/database;PARAM1=val1;PARAM2=val2
+//	h2+ssl://user:password@host:port/database?k=v
+//
 // The default port is 9092 when omitted.
 // For JDBC-style DSNs, semicolon-separated parameters are parsed and
 // available in Params. USER and PASSWORD parameters are extracted into
@@ -107,7 +136,8 @@ type Config struct {
 // percent-decoding and placed in Params. Userinfo (user:password@) is
 // extracted into Config.User and Config.Password.
 //
-// Unsupported H2 connection modes (mem:, file:, ssl:) return an error.
+// Unsupported H2 connection modes (mem:, file:) return an error; the ssl://
+// scheme selects TLS and is mapped to Config.TLS.
 func ParseDSN(input string) (*Config, error) {
 	if input == "" {
 		return nil, errors.New("empty DSN")
@@ -116,10 +146,10 @@ func ParseDSN(input string) (*Config, error) {
 	switch {
 	case strings.HasPrefix(input, "jdbc:h2:"):
 		return parseJDBC(input)
-	case strings.HasPrefix(input, "h2://") || strings.HasPrefix(input, "h2+tcp://"):
+	case strings.HasPrefix(input, "h2://") || strings.HasPrefix(input, "h2+tcp://") || strings.HasPrefix(input, "h2+ssl://"):
 		return parseNative(input)
 	default:
-		return nil, fmt.Errorf("unsupported DSN scheme: %q (supported: jdbc:h2:, h2://, h2+tcp://)", input)
+		return nil, fmt.Errorf("unsupported DSN scheme: %q (supported: jdbc:h2:, h2://, h2+tcp://, h2+ssl://)", input)
 	}
 }
 
@@ -165,12 +195,14 @@ func parseJDBC(input string) (*Config, error) {
 
 	inner := strings.TrimPrefix(input, prefix)
 
-	// Reject non-TCP H2 connection modes.
-	if strings.HasPrefix(inner, "mem:") || strings.HasPrefix(inner, "file:") || strings.HasPrefix(inner, "ssl:") {
-		return nil, fmt.Errorf("unsupported H2 connection mode: %q (only tcp is supported)", inner)
+	// Reject non-TCP H2 connection modes; ssl:// selects TLS over TCP.
+	if strings.HasPrefix(inner, "mem:") || strings.HasPrefix(inner, "file:") {
+		return nil, fmt.Errorf("unsupported H2 connection mode: %q (only tcp and ssl are supported)", inner)
 	}
-	if !strings.HasPrefix(inner, "tcp:") {
-		return nil, fmt.Errorf("unsupported H2 protocol: expected tcp://, got %q", inner)
+	if strings.HasPrefix(inner, "ssl:") {
+		cfg.TLS = true
+	} else if !strings.HasPrefix(inner, "tcp:") {
+		return nil, fmt.Errorf("unsupported H2 protocol: expected tcp:// or ssl://, got %q", inner)
 	}
 
 	u, err := url.Parse(inner)
@@ -238,6 +270,10 @@ func parseNative(input string) (*Config, error) {
 		if pw, ok := u.User.Password(); ok {
 			cfg.Password = pw
 		}
+	}
+
+	if strings.HasPrefix(input, "h2+ssl://") {
+		cfg.TLS = true
 	}
 
 	if u.RawQuery != "" {

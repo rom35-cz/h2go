@@ -1,4 +1,4 @@
-.PHONY: build vet lint fmt fmt-check test test-race test-integration test-integration-race db-seed clean
+.PHONY: build vet lint fmt fmt-check test test-race test-integration test-integration-race db-seed db-tls clean
 
 build:
 	go build ./...
@@ -55,3 +55,8 @@ db-seed:
 	  -password "$$JDBC_PASSWORD" \
 	  -script h2-data/seed.sql \
 	  -showResults
+## db-tls: generate local TLS test certs (idempotent) and start a second
+## H2 TCP server with -tcpSSL on port 9093. Point the driver at it with:
+##   export JDBC_TLS_URL="jdbc:h2:ssl://localhost:9093/h2-go"
+db-tls:
+	cd h2-data && ./gen-tls-certs.sh && ./h2-tls.sh

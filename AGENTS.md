@@ -76,6 +76,8 @@ Integration tests should read these environment variables, usually from `h2-data
 - `JDBC_URL`
 - `JDBC_USER`
 - `JDBC_PASSWORD`
+- `JDBC_TLS_URL` (optional; enables the TLS transport test — start the TLS
+  server first with `make db-tls`)
 
 Integration tests should skip cleanly when required env vars are absent.
 

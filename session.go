@@ -133,6 +133,16 @@ func (s *Session) cancelStatement(statementID int32) error {
 	if err != nil {
 		return fmt.Errorf("h2go: Session.cancelStatement: dial %s: %w", addr, err)
 	}
+	if s.cfg.TLS {
+		// The cancel side channel dials the same port as the main session, so
+		// a -tcpSSL server expects TLS here too. Reuse the session's config.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		conn, err = wrapTLS(ctx, conn, s.cfg)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("h2go: Session.cancelStatement: %w", err)
+		}
+	}
 	tr := NewReadWriter(conn)
 	defer func() { _ = tr.Abort() }()
 

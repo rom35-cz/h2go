@@ -6,6 +6,15 @@ All notable changes to `h2go` will be documented in this file.
 
 ### Added
 
+- TLS transport support: `ssl://` DSNs (`jdbc:h2:ssl://...`, `h2+ssl://...`)
+  and programmatic `Config.TLS` now wrap the connection in crypto/tls after
+  dialing, targeting servers started with H2's `-tcpSSL` flag. Verification
+  is configurable via `Config.TLSRootCAs`, `Config.TLSServerName`, and
+  `Config.TLSInsecureSkipVerify`; the statement-cancel side channel honors
+  the same settings. Local test tooling: `make db-tls` (self-signed cert +
+  TLS server on port 9093), integration test `TestIntegration_TLSTransport`
+  (skips without `JDBC_TLS_URL`).
+
 - Exact DECFLOAT support: `h2go.DecFloat` — an exact unscaled×10⁻ⁿ decimal
   type mirroring java.math.BigDecimal plus the DECFLOAT specials
   (`Infinity`, `-Infinity`, `NaN`) — with `ParseDecFloat`, `Scanner`/`Valuer`
