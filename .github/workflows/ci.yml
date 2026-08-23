@@ -93,16 +93,19 @@ jobs:
 
       - name: Start plain TCP server (:9092) and TLS server (:9093)
         run: |
+          # H2 2.4.240 rejects relative database paths unless the server's
+          # baseDir is ABSOLUTE (relative baseDir still fails the
+          # URL_RELATIVE_TO_CWD check on the joined name).
           mkdir -p h2-data/data
           nohup java -cp h2-data/lib/h2-2.4.240.jar org.h2.tools.Server \
             -tcp -tcpPort 9092 -tcpAllowOthers -ifNotExists \
-            -baseDir h2-data/data > /tmp/h2-tcp.log 2>&1 &
+            -baseDir "$GITHUB_WORKSPACE/h2-data/data" > /tmp/h2-tcp.log 2>&1 &
           nohup java \
-            -Djavax.net.ssl.keyStore=h2-data/tls/keystore.p12 \
+            -Djavax.net.ssl.keyStore="$GITHUB_WORKSPACE/h2-data/tls/keystore.p12" \
             -Djavax.net.ssl.keyStorePassword=h2gotest \
             -cp h2-data/lib/h2-2.4.240.jar org.h2.tools.Server \
             -tcp -tcpPort 9093 -tcpSSL -tcpAllowOthers -ifNotExists \
-            -baseDir h2-data/data > /tmp/h2-ssl.log 2>&1 &
+            -baseDir "$GITHUB_WORKSPACE/h2-data/data" > /tmp/h2-ssl.log 2>&1 &
 
           wait_for_port() {
             local port="$1"
