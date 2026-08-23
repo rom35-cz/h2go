@@ -274,3 +274,73 @@ func TestSmallCollectionsStillDecode(t *testing.T) {
 		t.Errorf("legacy array = %v, want [7]", got3)
 	}
 }
+
+// TestReadResultMetaColumnCountGuards verifies the fail-fast guards on the
+// wire-supplied result-metadata column count: negative counts are rejected as
+// broken frames and counts above maxWireCollectionElements are rejected before
+// the Columns slice is pre-allocated.
+func TestReadResultMetaColumnCountGuards(t *testing.T) {
+	tr := mockTransferFromBytes(nil) // no payload needed: guards fire first
+
+	if _, err := tr.ReadResultMeta(-5, TCPProtocolVersion21); err == nil {
+		t.Fatal("negative column count: expected error, got nil")
+	} else if !strings.Contains(err.Error(), "invalid column count") {
+		t.Errorf("negative column count error = %q, want it to mention \"invalid column count\"", err)
+	}
+
+	tr2 := mockTransferFromBytes(nil)
+	if _, err := tr2.ReadResultMeta(maxWireCollectionElements+1, TCPProtocolVersion21); err == nil {
+		t.Fatal("oversized column count: expected error, got nil")
+	} else if !strings.Contains(err.Error(), "exceeds cap") {
+		t.Errorf("oversized column count error = %q, want it to mention \"exceeds cap\"", err)
+	}
+}
+
+// TestPrepareCommandReadParamsParamCountGuards verifies the same guard class
+// for the parameter count in the SESSION_PREPARE_READ_PARAMS2 response. The
+// oversized case must return a clean cap error instead of attempting a
+// multi-gigabyte make() from a hostile frame.
+func TestPrepareCommandReadParamsParamCountGuards(t *testing.T) {
+	run := func(t *testing.T, paramCount int32, wantSubstring string) {
+		t.Helper()
+		clientConn, serverConn := net.Pipe()
+		defer clientConn.Close()
+		defer serverConn.Close()
+
+		errCh := make(chan error, 1)
+		go func() {
+			tr := NewReadWriter(serverConn)
+			// Drain the client's SESSION_PREPARE_READ_PARAMS2 request.
+			_, _ = tr.ReadInt32()  // op
+			_, _ = tr.ReadInt32()  // command id
+			_, _ = tr.ReadString() // sql
+			_ = tr.WriteInt32(StatusOK)
+			_ = tr.WriteBool(true)
+			_ = tr.WriteBool(false)
+			_ = tr.WriteInt32(CmdSelect)
+			_ = tr.WriteInt32(paramCount)
+			errCh <- tr.Flush()
+			// Hold the pipe open briefly so the client reads the frame
+			// before the transport dies; the guard fires without more I/O.
+			time.Sleep(100 * time.Millisecond)
+		}()
+
+		sess := &Session{tr: NewReadWriter(clientConn), id: "test", version: 21}
+		_, err := sess.PrepareCommandReadParams(context.Background(), "SELECT 1")
+		<-errCh
+
+		if err == nil {
+			t.Fatalf("paramCount %d: expected error, got nil", paramCount)
+		}
+		if !strings.Contains(err.Error(), wantSubstring) {
+			t.Errorf("paramCount %d error = %q, want it to contain %q", paramCount, err, wantSubstring)
+		}
+	}
+
+	t.Run("negative", func(t *testing.T) {
+		run(t, -1, "invalid param count")
+	})
+	t.Run("oversized", func(t *testing.T) {
+		run(t, maxWireCollectionElements+1, "exceeds cap")
+	})
+}

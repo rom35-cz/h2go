@@ -2,6 +2,16 @@
 
 All notable changes to `h2go` will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Fail-fast caps on the last two wire-supplied allocation counts: result-set
+  metadata column count (`ReadResultMeta`) and prepared-statement parameter
+  count now reject negative values as broken frames and refuse counts above
+  1,048,576 before pre-allocating, instead of attempting the allocation from
+  a hostile or corrupted frame.
+
 ## [v0.2.0] - 2026-08-22
 
 Post-MVP maturity fixes from the `MATURITY_MVP.md` and `MATURITY_ROUND_II.md`

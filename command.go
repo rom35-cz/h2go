@@ -218,6 +218,15 @@ func (s *Session) PrepareCommandReadParams(ctx context.Context, sql string) (cmd
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: failed to read paramCount: %w", err)
 	}
 
+	// Fail-fast guards on the wire-supplied parameter count before
+	// pre-allocating (same class as the result-metadata column-count cap).
+	if paramCount < 0 {
+		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: invalid param count %d", paramCount)
+	}
+	if int64(paramCount) > maxWireCollectionElements {
+		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: param count %d exceeds cap %d", paramCount, maxWireCollectionElements)
+	}
+
 	// Read parameter metadata
 	params := make([]ParameterMeta, paramCount)
 	for i := 0; i < int(paramCount); i++ {

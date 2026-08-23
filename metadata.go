@@ -56,6 +56,17 @@ type ResultMeta struct {
 //   - identity (boolean)
 //   - nullable (int)
 func (tr *Tr) ReadResultMeta(columnCount int32, version int32) (*ResultMeta, error) {
+	// Fail-fast guards before pre-allocating Columns from a wire-supplied
+	// count: a negative count is a broken frame, and anything above
+	// maxWireCollectionElements is treated as a hostile/broken server rather
+	// than attempted (compare int64 BEFORE converting to int).
+	if columnCount < 0 {
+		return nil, fmt.Errorf("h2go: ReadResultMeta: invalid column count %d", columnCount)
+	}
+	if int64(columnCount) > maxWireCollectionElements {
+		return nil, fmt.Errorf("h2go: ReadResultMeta: column count %d exceeds cap %d", columnCount, maxWireCollectionElements)
+	}
+
 	meta := &ResultMeta{
 		ColumnCount: columnCount,
 		Columns:     make([]ResultColumn, columnCount),

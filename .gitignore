@@ -32,3 +32,6 @@ h2database/
 # Logs
 *.log
 .pi-subagents/
+
+# Local working notes
+/TASKLIST.md
