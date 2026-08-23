@@ -55,13 +55,12 @@
 //
 // # DSN parameters
 //
-// Of the DSN parameters, only USER and PASSWORD are consumed (extracted into
-// Config). Everything else — JDBC ;KEY=VAL segments and native ?k=v pairs,
-// e.g. IFEXISTS, ACCESS_MODE_DATA, AUTO_SERVER — is parsed into Config.Params
-// but not applied: the driver neither forwards it to the server nor enforces
-// it locally. Validate such settings manually before connecting. With
-// Config.Logger at debug level, each connection logs the ignored keys (never
-// their values).
+// DSN settings follow H2's own client policy: USER and PASSWORD are consumed;
+// server-enforced settings (IFEXISTS, ACCESS_MODE_DATA, INIT, MODE,
+// LOCK_TIMEOUT, FORBID_CREATION) are forwarded in the handshake property map;
+// embedded/JDBC-client-only settings are accepted but have no effect; and any
+// unknown setting is rejected unless the DSN carries
+// IGNORE_UNKNOWN_SETTINGS=TRUE.
 //
 // # Result options
 //

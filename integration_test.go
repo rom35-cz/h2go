@@ -2772,3 +2772,100 @@ func TestIntegration_PerStatementGeneratedKeys(t *testing.T) {
 		t.Errorf("post-override LastInsertId = %d, %v; want auto keys again", id3, lerr)
 	}
 }
+
+// TestIntegration_DsnSettings verifies Tier A DSN-parameter behavior against
+// a live server: forwarded settings are enforced server-side (IFEXISTS,
+// ACCESS_MODE_DATA=r), and unknown settings are rejected client-side before
+// any network I/O unless IGNORE_UNKNOWN_SETTINGS=TRUE.
+func TestIntegration_DsnSettings(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	ctx := context.Background()
+
+	baseCfg, err := ParseDSN(env["JDBC_URL"])
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+
+	open := func(dbName string, extraParams map[string]string) (*sql.DB, error) {
+		t.Helper()
+		cfg := *baseCfg
+		cfg.Database = dbName
+		cfg.Params = map[string]string{}
+		for k, v := range extraParams {
+			if err := setParam(cfg.Params, k, v); err != nil {
+				return nil, err
+			}
+		}
+		MergeCredentials(&cfg, env["JDBC_USER"], env["JDBC_PASSWORD"])
+		return OpenDB(&cfg)
+	}
+
+	t.Run("ifexists on existing database", func(t *testing.T) {
+		db, err := open(baseCfg.Database, map[string]string{"IFEXISTS": "TRUE"})
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		defer db.Close()
+		var v int
+		if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&v); err != nil || v != 1 {
+			t.Fatalf("query: %v (%d)", err, v)
+		}
+	})
+
+	t.Run("ifexists on missing database fails", func(t *testing.T) {
+		db, err := open("definitely_missing_"+uuid.NewString()[:8],
+			map[string]string{"IFEXISTS": "TRUE"})
+		if err != nil {
+			t.Fatalf("OpenDB should succeed lazily: %v", err)
+		}
+		defer db.Close()
+		var v int
+		err = db.QueryRowContext(ctx, "SELECT 1").Scan(&v)
+		if err == nil {
+			t.Fatal("expected failure for missing database with IFEXISTS=TRUE")
+		}
+		// H2 90013 = DATABASE_NOT_FOUND_1.
+		if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "90013") {
+			t.Errorf("error %q should indicate a missing database", err)
+		}
+	})
+
+	t.Run("access mode r rejects writes", func(t *testing.T) {
+		dbName := "accmode_" + uuid.NewString()[:8]
+		setup, err := open(dbName, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := setup.ExecContext(ctx, "CREATE TABLE accmode_probe(v INT)"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		defer func() { _, _ = setup.ExecContext(ctx, "DROP TABLE accmode_probe") }()
+		setup.Close()
+
+		db, err := open(dbName, map[string]string{"ACCESS_MODE_DATA": "r"})
+		if err != nil {
+			t.Fatalf("open read-only: %v", err)
+		}
+		defer db.Close()
+
+		var v int
+		if err := db.QueryRowContext(ctx, "SELECT 40+2").Scan(&v); err != nil || v != 42 {
+			t.Fatalf("read must work in r mode: %v (%d)", err, v)
+		}
+		if _, err := db.ExecContext(ctx, "INSERT INTO accmode_probe VALUES (1)"); err == nil {
+			t.Fatal("write unexpectedly succeeded in ACCESS_MODE_DATA=r session")
+		} else {
+			t.Logf("write rejected as expected: %v", err)
+		}
+	})
+
+	t.Run("unknown setting rejected before dialing", func(t *testing.T) {
+		_, err := ParseDSN(env["JDBC_URL"] + ";NOT_A_REAL_SETTING=1")
+		if err == nil {
+			t.Fatal("expected parse-time rejection of unknown setting")
+		}
+	})
+}

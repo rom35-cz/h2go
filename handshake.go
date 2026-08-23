@@ -210,9 +210,21 @@ func sendCredentials(tr *Tr, cfg *Config) error {
 	if err := tr.WriteBytes(nil); err != nil {
 		return err
 	}
-	// Connection properties: none for now.
-	if err := tr.WriteInt32(0); err != nil {
+	// Connection properties: forwarded settings from the DSN (IFEXISTS,
+	// ACCESS_MODE_DATA, INIT, MODE, LOCK_TIMEOUT, FORBID_CREATION). The
+	// server feeds these into its ConnectionInfo and enforces them while
+	// opening the database — exactly like H2's own JDBC client.
+	props := sessionPropertyMap(cfg.Params)
+	if err := tr.WriteInt32(int32(len(props))); err != nil {
 		return err
+	}
+	for _, kv := range props {
+		if err := tr.WriteString(kv[0]); err != nil {
+			return err
+		}
+		if err := tr.WriteString(kv[1]); err != nil {
+			return err
+		}
 	}
 	return nil
 }

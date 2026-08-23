@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -27,6 +28,21 @@ type Config struct {
 	Password string
 	// Params holds JDBC semicolon-separated or native query parameters not
 	// otherwise consumed.
+	//
+	// Parameter policy (mirrors H2's own client semantics):
+	//
+	//   - USER / PASSWORD are extracted into Config.User / Config.Password.
+	//   - Forwarded settings (IFEXISTS, ACCESS_MODE_DATA, INIT, MODE,
+	//     LOCK_TIMEOUT, FORBID_CREATION) are sent to the server in the
+	//     handshake property map; the server enforces them when opening the
+	//     database.
+	//   - Recognized client-side settings (e.g. AUTO_SERVER, TRACE_LEVEL_*)
+	//     are accepted but have no effect on this pure-TCP driver.
+	//   - Anything else is REJECTED with an error at parse time unless the
+	//     DSN also carries IGNORE_UNKNOWN_SETTINGS=TRUE — mirroring H2 JDBC.
+	//
+	// Keys are matched case-insensitively; original spellings are preserved
+	// in this map.
 	Params map[string]string
 	// OriginalURL is the exact DSN string supplied to ParseDSN,
 	// preserved for the handshake.
@@ -229,12 +245,16 @@ func parseJDBC(input string) (*Config, error) {
 		p := parts[i]
 		idx := strings.Index(p, "=")
 		if idx < 0 {
-			cfg.Params[p] = ""
+			if err := setParam(cfg.Params, p, ""); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		key := p[:idx]
 		val := p[idx+1:]
-		cfg.Params[key] = val
+		if err := setParam(cfg.Params, key, val); err != nil {
+			return nil, err
+		}
 		if strings.EqualFold(key, "USER") {
 			cfg.User = val
 		} else if strings.EqualFold(key, "PASSWORD") {
@@ -280,7 +300,9 @@ func parseNative(input string) (*Config, error) {
 		q := u.Query()
 		for k, vals := range q {
 			if len(vals) > 0 {
-				cfg.Params[k] = vals[0]
+				if err := setParam(cfg.Params, k, vals[0]); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -299,5 +321,114 @@ func validate(cfg *Config) (*Config, error) {
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("invalid port %q: must be in range 1-65535", cfg.Port)
 	}
+	if err := validateParams(cfg.Params); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// forwardSettings are sent to the server in the handshake property map; the
+// server-side ConnectionInfo enforces them while opening the database
+// (reference: SessionRemote.initTransfer writes all connection properties;
+// TcpServerThread feeds them into ConnectionInfo.setProperty).
+var forwardSettings = map[string]bool{
+	"ACCESS_MODE_DATA": true, // r | rw | rws: session read-only mode
+	"FORBID_CREATION":  true, // forbid implicit database creation
+	"IFEXISTS":         true, // fail unless the database already exists
+	"INIT":             true, // SQL run right after connect (server-side)
+	"LOCK_TIMEOUT":     true, // default lock wait in milliseconds
+	"MODE":             true, // server-side compatibility mode
+}
+
+// localOnlySettings are recognized H2 connection settings that only matter to
+// embedded/JDBC-client deployments. They are accepted (so URLs carrying them
+// keep working) but have no effect on this pure-TCP driver.
+var localOnlySettings = map[string]bool{
+	"AUTO_RECONNECT":         true,
+	"AUTO_SERVER":            true,
+	"CIPHER":                 true,
+	"DB_CLOSE_DELAY":         true,
+	"DB_CLOSE_ON_EXIT":       true,
+	"FILE_LOCK":              true,
+	"JMX":                    true,
+	"NETWORK_TIMEOUT":        true,
+	"NON_KEYWORDS":           true,
+	"OLD_INFORMATION_SCHEMA": true,
+	"OPEN_NEW":               true,
+	"PAGE_SIZE":              true,
+	"RECOVER":                true,
+	"STATEMENT_CACHE_SIZE":   true,
+	"TRACE_LEVEL_FILE":       true,
+	"TRACE_LEVEL_SYSTEM_OUT": true,
+}
+
+// validateParams enforces the unknown-setting policy: any parameter outside
+// the known sets is rejected unless IGNORE_UNKNOWN_SETTINGS=TRUE, mirroring
+// H2's ConnectionInfo behavior (UNSUPPORTED_SETTING vs IGNORE_UNKNOWN_SETTINGS).
+// USER/PASSWORD never reach here — they are consumed earlier.
+func validateParams(params map[string]string) error {
+	ignoreUnknown := false
+	var unknown []string
+	for k := range params {
+		switch strings.ToUpper(k) {
+		case "IGNORE_UNKNOWN_SETTINGS":
+			ignoreUnknown = isTruthy(params[k])
+		case "USER", "PASSWORD":
+			// consumed into Config before validate runs; tolerate remnants
+		default:
+			if !forwardSettings[strings.ToUpper(k)] && !localOnlySettings[strings.ToUpper(k)] {
+				unknown = append(unknown, k)
+			}
+		}
+	}
+	if len(unknown) == 0 || ignoreUnknown {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("unsupported DSN setting(s): %s (prefix the DSN with IGNORE_UNKNOWN_SETTINGS=TRUE to allow unknown settings, as with H2 JDBC)",
+		strings.Join(unknown, ", "))
+}
+
+func isTruthy(v string) bool {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "1", "TRUE", "YES", "ON":
+		return true
+	}
+	return false
+}
+
+// setParam inserts a DSN setting case-insensitively: an exact-value repeat is
+// accepted (original spelling wins); a conflicting value is a duplicate-
+// property error, mirroring ConnectionInfo's DUPLICATE_PROPERTY handling.
+func setParam(params map[string]string, key, value string) error {
+	for k, v := range params {
+		if strings.EqualFold(k, key) {
+			if v != value {
+				return fmt.Errorf("duplicate DSN setting %q with conflicting values %q and %q", key, v, value)
+			}
+			return nil
+		}
+	}
+	params[key] = value
+	return nil
+}
+
+// sessionPropertyMap builds the handshake property map from cfg.Params:
+// every forwarded setting, upper-cased key, sorted for deterministic frames.
+// Values pass through verbatim; the server validates them.
+func sessionPropertyMap(params map[string]string) [][2]string {
+	type kv = [2]string
+	out := make([]kv, 0, len(params))
+	for k, v := range params {
+		up := strings.ToUpper(k)
+		if up == "IGNORE_UNKNOWN_SETTINGS" {
+			// Consumed by the client; not a server-side session property.
+			continue
+		}
+		if forwardSettings[up] {
+			out = append(out, kv{up, v})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
+	return out
 }

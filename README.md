@@ -162,28 +162,24 @@ a generated self-signed certificate (`h2-data/tls/`, git-ignored).
 
 ## DSN parameters
 
-The parser accepts JDBC-style semicolon parameters
-(`jdbc:h2:tcp://localhost:9092/mydb;IFEXISTS=TRUE`) and native URL query
-parameters (`h2://localhost:9092/mydb?IFEXISTS=TRUE`). Of these:
+JDBC-style semicolon parameters (`...;IFEXISTS=TRUE`) and native query
+parameters (`...?IFEXISTS=TRUE`) follow H2's own client policy:
 
-- `USER` and `PASSWORD` are consumed — extracted into `Config.User` /
-  `Config.Password` (never stored in `Params`).
-- everything else lands in `Config.Params` and is currently **parsed but not
-  applied**: the driver neither forwards these parameters to the server nor
-  enforces them locally.
+| Class | Settings | Behavior |
+|---|---|---|
+| Consumed | `USER`, `PASSWORD` | Extracted into `Config.User` / `Config.Password` |
+| **Forwarded to the server** | `IFEXISTS`, `ACCESS_MODE_DATA` (`r`/`rw`/`rws`), `INIT`, `MODE`, `LOCK_TIMEOUT`, `FORBID_CREATION` | Sent in the handshake property map; the **server enforces them** when opening the database — exactly like H2 JDBC |
+| Accepted, no effect | `AUTO_SERVER`, `AUTO_RECONNECT`, `OPEN_NEW`, `DB_CLOSE_DELAY`, `DB_CLOSE_ON_EXIT`, `FILE_LOCK`, `CIPHER`, `RECOVER`, `PAGE_SIZE`, `NETWORK_TIMEOUT`, `STATEMENT_CACHE_SIZE`, `TRACE_LEVEL_*`, `NON_KEYWORDS`, `JMX`, `OLD_INFORMATION_SCHEMA` | Embedded/JDBC-client-only settings; kept for URL compatibility, ignored by this pure-TCP driver |
+| Unknown | anything else | **Rejected at parse time** unless the DSN also carries `IGNORE_UNKNOWN_SETTINGS=TRUE` (H2 semantics) |
 
-Risky examples of silently ignored parameters:
+Notes:
 
-- `IFEXISTS=TRUE` — the connection still succeeds when the database does not
-  exist (the server auto-creates it) because the flag is never enforced.
-- `ACCESS_MODE_DATA=r` — read-only access mode is not requested.
-- `AUTO_SERVER=TRUE`, file-lock settings, `TRACE_LEVEL_*`, ... — ignored.
-
-If your deployment depends on any of these, validate them manually before
-connecting (for example, check that the database file exists yourself). When
-`Config.Logger` is configured at debug level, each new connection logs one
-record naming which parameter keys were parsed but not applied — keys only;
-parameter values are never logged.
+- Duplicate settings that differ only in case must carry identical values,
+  otherwise parsing fails (H2's `DUPLICATE_PROPERTY` behavior).
+- `INIT=...` runs server-side SQL right after connect — treat it like any
+  credential-bearing setting.
+- With `Config.Logger` at debug level each connection logs which keys were
+  accepted-but-ignored; keys only, never values.
 
 ## Supported types
 
@@ -247,6 +243,20 @@ The UTF-16 string codec has ASCII fast paths (single allocation per write,
 in-place compaction on read); non-ASCII text takes the general surrogate-
 aware path. Numbers vary run to run — treat them as order-of-magnitude
 baselines when profiling changes.
+
+## Error handling and reconnection
+
+- All SQL errors from the server decode into `*h2go.Error` (alias
+  `*h2go.H2Error`) with `SQLState`, `Code`, `Message`, and the failing SQL;
+  use `errors.As` to inspect. The stream stays usable after fully parsed
+  server errors.
+- A broken transport (mid-frame EOF, timeout) marks the pooled session dead;
+  `database/sql` then discards it via `driver.ErrBadConn` and retries on a
+  fresh connection automatically.
+- Context cancellation during a running statement is forwarded to the server
+  (side-channel cancel); the caller sees `context.DeadlineExceeded` /
+  `context.Canceled` and the connection survives. See "Context cancellation"
+  above.
 
 ## Limitations
 

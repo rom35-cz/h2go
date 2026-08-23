@@ -65,10 +65,16 @@ jobs:
         run: CGO_ENABLED=0 go build ./...
 
   integration:
-    name: Integration (live H2 2.4.240, plain + TLS)
+    name: Integration (H2 ${{ matrix.h2-version }}, plain + TLS)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        # The driver claims "H2 2.4.240 and later" — prove it against the
+        # newest release too, not just the reference version.
+        h2-version: ["2.4.240", "latest"]
     steps:
       - uses: actions/checkout@v4
 
@@ -82,11 +88,18 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Download H2 jar from Maven Central
+      - name: Resolve H2 jar from Maven Central (${{ matrix.h2-version }})
         run: |
+          if [ "${{ matrix.h2-version }}" = "latest" ]; then
+            H2V="$(curl -fsSL https://repo1.maven.org/maven2/com/h2database/h2/maven-metadata.xml | grep -oPm1 '(?<=<release>)[^<]+')"
+            echo "latest H2 release: $H2V"
+          else
+            H2V="${{ matrix.h2-version }}"
+          fi
+          echo "H2_VERSION=$H2V" >> "$GITHUB_ENV"
           mkdir -p h2-data/lib
-          curl -fsSL -o h2-data/lib/h2-2.4.240.jar \
-            https://repo1.maven.org/maven2/com/h2database/h2/2.4.240/h2-2.4.240.jar
+          curl -fsSL -o "h2-data/lib/h2-$H2V.jar" \
+            "https://repo1.maven.org/maven2/com/h2database/h2/$H2V/h2-$H2V.jar"
 
       - name: Generate TLS certificates (keystore + cert.pem)
         run: sh h2-data/gen-tls-certs.sh
@@ -97,7 +110,7 @@ jobs:
           # baseDir is ABSOLUTE (relative baseDir still fails the
           # URL_RELATIVE_TO_CWD check on the joined name).
           mkdir -p h2-data/data
-          nohup java -cp h2-data/lib/h2-2.4.240.jar org.h2.tools.Server \
+          nohup java -cp "h2-data/lib/h2-$H2_VERSION.jar" org.h2.tools.Server \
             -tcp -tcpPort 9092 -tcpAllowOthers -ifNotExists \
             -baseDir "$GITHUB_WORKSPACE/h2-data/data" > /tmp/h2-tcp.log 2>&1 &
           nohup java \
@@ -126,20 +139,20 @@ jobs:
 
       - name: Sanity-check both servers via H2 Shell
         run: |
-          java -cp h2-data/lib/h2-2.4.240.jar org.h2.tools.Shell \
+          java -cp "h2-data/lib/h2-$H2_VERSION.jar" org.h2.tools.Shell \
             -url "jdbc:h2:tcp://localhost:9092/ci-sanity" \
             -user sa -password sa \
             -sql "SELECT 'tcp-ok';" | tee /dev/stderr | grep -q tcp-ok
           java -Djavax.net.ssl.trustStore=h2-data/tls/truststore.p12 \
             -Djavax.net.ssl.trustStorePassword=h2gotest \
-            -cp h2-data/lib/h2-2.4.240.jar org.h2.tools.Shell \
+            -cp "h2-data/lib/h2-$H2_VERSION.jar" org.h2.tools.Shell \
             -url "jdbc:h2:ssl://localhost:9093/ci-sanity" \
             -user sa -password sa \
             -sql "SELECT 'ssl-ok';" | tee /dev/stderr | grep -q ssl-ok
 
       - name: Seed database
         run: |
-          java -cp h2-data/lib/h2-2.4.240.jar org.h2.tools.RunScript \
+          java -cp "h2-data/lib/h2-$H2_VERSION.jar" org.h2.tools.RunScript \
             -url "jdbc:h2:tcp://localhost:9092/ci-go-test" \
             -user sa -password sa \
             -script h2-data/seed.sql

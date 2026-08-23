@@ -180,13 +180,13 @@ func TestParseDSN_MultipleSemicolonParams(t *testing.T) {
 }
 
 func TestParseDSN_ParamWithoutValue(t *testing.T) {
-	input := "jdbc:h2:tcp://localhost:9092/db;SOMEFLAG"
+	input := "jdbc:h2:tcp://localhost:9092/db;IFEXISTS" // known setting, no value
 	cfg, err := ParseDSN(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Params["SOMEFLAG"] != "" {
-		t.Errorf("Params[SOMEFLAG] = %q, want empty string", cfg.Params["SOMEFLAG"])
+	if cfg.Params["IFEXISTS"] != "" {
+		t.Errorf("Params[IFEXISTS] = %q, want empty string", cfg.Params["IFEXISTS"])
 	}
 }
 
@@ -288,7 +288,7 @@ func TestParseDSN_Native_QueryParams(t *testing.T) {
 
 func TestParseDSN_Native_PercentDecoded(t *testing.T) {
 	// Password contains a colon encoded as %3A; query value has a space.
-	input := "h2://user:p%3Ass@localhost:9092/db?desc=hello%20world"
+	input := "h2://user:p%3Ass@localhost:9092/db?MODE=hello%20world"
 	cfg, err := ParseDSN(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -296,13 +296,13 @@ func TestParseDSN_Native_PercentDecoded(t *testing.T) {
 	if cfg.Password != "p:ss" {
 		t.Errorf("Password = %q, want p:ss", cfg.Password)
 	}
-	if cfg.Params["desc"] != "hello world" {
-		t.Errorf("Params[desc] = %q, want hello world", cfg.Params["desc"])
+	if cfg.Params["MODE"] != "hello world" {
+		t.Errorf("Params[MODE] = %q, want \"hello world\"", cfg.Params["MODE"])
 	}
 }
 
 func TestParseDSN_Native_NoUserinfo(t *testing.T) {
-	input := "h2://localhost:9092/db?flag=1"
+	input := "h2://localhost:9092/db?LOCK_TIMEOUT=1"
 	cfg, err := ParseDSN(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -313,8 +313,8 @@ func TestParseDSN_Native_NoUserinfo(t *testing.T) {
 	if cfg.Password != "" {
 		t.Errorf("Password = %q, want empty", cfg.Password)
 	}
-	if cfg.Params["flag"] != "1" {
-		t.Errorf("Params[flag] = %q, want 1", cfg.Params["flag"])
+	if cfg.Params["LOCK_TIMEOUT"] != "1" {
+		t.Errorf("Params[LOCK_TIMEOUT] = %q, want 1", cfg.Params["LOCK_TIMEOUT"])
 	}
 }
 
@@ -424,5 +424,110 @@ func TestMergeCredentials_EmptyEnvironment(t *testing.T) {
 	}
 	if cfg.Password != "dsnpass" {
 		t.Errorf("Password = %q, want dsnpass", cfg.Password)
+	}
+}
+
+// === DSN parameter policy tests (Tier A production hardening) ===
+
+func TestParseDSN_UnknownSettingRejected(t *testing.T) {
+	input := "jdbc:h2:tcp://localhost:9092/db;MY_FLAG=1"
+	_, err := ParseDSN(input)
+	if err == nil {
+		t.Fatal("expected rejection of unknown setting")
+	}
+	for _, want := range []string{"MY_FLAG", "IGNORE_UNKNOWN_SETTINGS"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
+	}
+
+	// Escape hatch mirrors H2 JDBC semantics.
+	cfg, err := ParseDSN(input + ";IGNORE_UNKNOWN_SETTINGS=TRUE")
+	if err != nil {
+		t.Fatalf("IGNORE_UNKNOWN_SETTINGS=TRUE must tolerate unknown settings: %v", err)
+	}
+	if cfg.Params["MY_FLAG"] != "1" {
+		t.Errorf("unknown param not preserved: %v", cfg.Params)
+	}
+}
+
+func TestParseDSN_KnownSettingsAccepted(t *testing.T) {
+	input := "jdbc:h2:tcp://localhost:9092/db" +
+		";IFEXISTS=TRUE;ACCESS_MODE_DATA=r;MODE=Legacy;LOCK_TIMEOUT=2500" +
+		";AUTO_SERVER=TRUE;TRACE_LEVEL_FILE=0;NON_KEYWORDS=VALUE" +
+		";ifexists=TRUE" // case-insensitive duplicate, same value: kept once
+	cfg, err := ParseDSN(input)
+	if err != nil {
+		t.Fatalf("known settings rejected: %v", err)
+	}
+	if cfg.Params["IFEXISTS"] != "TRUE" {
+		t.Errorf("IFEXISTS = %q", cfg.Params["IFEXISTS"])
+	}
+	if len(cfg.Params) != 7 {
+		t.Errorf("Params has %d entries, want 7 (duplicate spelling collapsed): %v", len(cfg.Params), cfg.Params)
+	}
+
+	// Conflicting duplicate is a parse error, like H2's DUPLICATE_PROPERTY.
+	if _, err := ParseDSN("jdbc:h2:tcp://localhost:9092/db;IFEXISTS=TRUE;ifexists=false"); err == nil {
+		t.Error("conflicting duplicate setting: expected error")
+	}
+	if cfg.Params["ACCESS_MODE_DATA"] != "r" {
+		t.Errorf("ACCESS_MODE_DATA = %q", cfg.Params["ACCESS_MODE_DATA"])
+	}
+}
+
+func TestSessionPropertyMap(t *testing.T) {
+	params := map[string]string{
+		"ifexists":         "TRUE",
+		"ACCESS_MODE_DATA": "r",
+		"MODE":             "MySQL",
+		"AUTO_SERVER":      "TRUE", // local-only: must not be forwarded
+		"TRACE_LEVEL_FILE": "0",    // local-only
+		"MyFlag":           "x",    // tolerated unknown: must not be forwarded
+	}
+	got := sessionPropertyMap(params)
+	want := [][2]string{
+		{"ACCESS_MODE_DATA", "r"},
+		{"IFEXISTS", "TRUE"},
+		{"MODE", "MySQL"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("property map = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("property[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+
+	if empty := sessionPropertyMap(nil); len(empty) != 0 {
+		t.Errorf("nil params should produce empty map, got %v", empty)
+	}
+}
+
+func TestValidateParams_IgnoreFlagParsing(t *testing.T) {
+	cases := []struct {
+		value   string
+		rejects bool
+	}{
+		{"TRUE", false},
+		{"true", false},
+		{"1", false},
+		{"FALSE", true},
+		{"", true},
+		{"yes", false},
+	}
+	for _, tc := range cases {
+		params := map[string]string{
+			"SOMETHING":               "1",
+			"IGNORE_UNKNOWN_SETTINGS": tc.value,
+		}
+		err := validateParams(params)
+		if tc.rejects && err == nil {
+			t.Errorf("IGNORE_UNKNOWN_SETTINGS=%q: expected rejection", tc.value)
+		}
+		if !tc.rejects && err != nil {
+			t.Errorf("IGNORE_UNKNOWN_SETTINGS=%q: unexpected error %v", tc.value, err)
+		}
 	}
 }

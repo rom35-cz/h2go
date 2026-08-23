@@ -57,11 +57,11 @@ func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 	}, nil
 }
 
-// logIgnoredParams emits one debug record listing DSN parameters that were
-// parsed into Config.Params but are not applied by this driver (finding 7:
-// IFEXISTS, AUTO_SERVER, ACCESS_MODE_DATA, file-lock settings, etc. silently
-// no-op). Only keys are listed — values may contain credentials and are never
-// logged, so no redaction machinery is involved.
+// logIgnoredParams emits one debug record listing DSN parameters that are
+// recognized but have no effect on this pure-TCP driver (embedded/JDBC-client
+// settings such as AUTO_SERVER or TRACE_LEVEL_*). Unknown settings never get
+// this far: they are rejected at parse time. Only keys are listed — values may
+// contain credentials and are never logged.
 // It returns true when a record was emitted, false when diagnostics are
 // disabled or there is nothing to report.
 func logIgnoredParams(cfg *Config) bool {
@@ -74,7 +74,7 @@ func logIgnoredParams(cfg *Config) bool {
 	}
 	sort.Strings(keys)
 	logConfig(cfg, slog.LevelDebug,
-		"DSN parameters parsed but not applied by this driver",
+		"DSN parameters accepted but not applied by this pure-TCP driver",
 		slog.Int("count", len(keys)),
 		slog.String("keys", strings.Join(keys, ",")))
 	return true

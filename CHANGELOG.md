@@ -2,6 +2,30 @@
 
 All notable changes to `h2go` will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking:** unknown DSN settings are now **rejected at parse time**
+  instead of being silently ignored, mirroring H2 JDBC's
+  `IGNORE_UNKNOWN_SETTINGS` semantics. URLs carrying unrecognized parameters
+  fail with an error naming them; add `IGNORE_UNKNOWN_SETTINGS=TRUE` to keep
+  accepting them.
+
+### Added
+
+- Server-side enforcement of forwarded DSN settings: `IFEXISTS`,
+  `ACCESS_MODE_DATA` (`r`/`rw`/`rws`), `INIT`, `MODE`, `LOCK_TIMEOUT` and
+  `FORBID_CREATION` now travel to the server in the handshake property map
+  (the same channel H2's own JDBC client uses), so read-only sessions,
+  missing-database failures and compatibility modes behave as JDBC users
+  expect.
+- Case-insensitive duplicate DSN settings with conflicting values are a parse
+  error (`DUPLICATE_PROPERTY` semantics); identical repeats collapse.
+- CI runs the live-H2 integration matrix against both H2 2.4.240 and the
+  latest Maven release, substantiating the "2.4.240 and later" claim.
+- README production notes: error handling and reconnection semantics.
+
 ## [v0.3.1] - 2026-08-23
 
 ### Changed
