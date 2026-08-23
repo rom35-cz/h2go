@@ -2,6 +2,14 @@
 
 All notable changes to `h2go` will be documented in this file.
 
+## [v0.3.1] - 2026-08-23
+
+### Changed
+
+- Repository published as **public** (was private during the v0.3.0 window).
+  No code changes — retagged so fresh module proxy/checksum lookups resolve
+  cleanly for everyone.
+
 ## [v0.3.0] - 2026-08-23
 
 ### Added
