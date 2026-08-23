@@ -4,6 +4,17 @@ All notable changes to `h2go` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Exact DECFLOAT support: `h2go.DecFloat` — an exact unscaled×10⁻ⁿ decimal
+  type mirroring java.math.BigDecimal plus the DECFLOAT specials
+  (`Infinity`, `-Infinity`, `NaN`) — with `ParseDecFloat`, `Scanner`/`Valuer`
+  integration and byte-exact rendering of H2's textual form. DECFLOAT wire
+  strings are now validated eagerly on read (mirroring the reference
+  client's `new BigDecimal(s)`), so broken frames fail at decode time.
+  Documented H2's assignment-time normalization: trailing zeros stripped,
+  zero collapses to plain "0".
+
 ### Fixed
 
 - Fail-fast caps on the last two wire-supplied allocation counts: result-set

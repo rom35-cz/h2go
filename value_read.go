@@ -105,8 +105,20 @@ func (tr *Tr) readValueInternal(colType *TypeInfo, lc *lobCollector) (driver.Val
 		return tr.readLOBValue(typeCode, lc)
 
 	case ValueTypeDecfloat:
-		// DECFLOAT is sent as a string
-		return tr.readStringValue()
+		// DECFLOAT is sent as a string. The reference client parses it eagerly
+		// via new BigDecimal(s); mirror that fail-fast behavior so a broken
+		// frame surfaces here instead of at application scan time. The value
+		// itself is returned unchanged (exact H2 textual form).
+		v, err := tr.readStringValue()
+		if err != nil {
+			return nil, err
+		}
+		if str, ok := v.(string); ok {
+			if _, perr := ParseDecFloat(str); perr != nil {
+				return nil, fmt.Errorf("h2go: ReadValue: invalid DECFLOAT: %w", perr)
+			}
+		}
+		return v, nil
 
 	case ValueTypeJSON, ValueTypeGeometry, ValueTypeJavaObject:
 		return tr.readBytesValue()

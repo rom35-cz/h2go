@@ -2393,3 +2393,128 @@ func TestIntegration_SQLError(t *testing.T) {
 	}
 	t.Logf("SQL error: SQLState=%s Code=%d Message=%s", h2err.SQLState, h2err.Code, h2err.Message)
 }
+
+// TestIntegration_DecfloatExactRoundTrip verifies exact DECFLOAT handling end
+// to end (post-v0.2.0 backlog item #3): the wire string decoded by the driver
+// must equal H2's own canonical rendering byte-for-byte for finite values
+// (including scientific-notation normalization), the special values
+// Infinity/-Infinity/NaN must round-trip, DecFloat.String() must reproduce
+// H2's text exactly, and a bound *DecFloat must survive an insert/read cycle.
+func TestIntegration_DecfloatExactRoundTrip(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS dec_probe"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	defer func() { _, _ = db.ExecContext(ctx, "DROP TABLE dec_probe") }()
+	if _, err := db.ExecContext(ctx, "CREATE TABLE dec_probe(id INT PRIMARY KEY, v DECFLOAT)"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// in is bound as a plain string parameter; want is H2's canonical text
+	// (BigDecimal.toString semantics), verified against both the raw driver
+	// decode and CAST(v AS VARCHAR).
+	//
+	// Note the normalization H2 applies when coercing VARCHAR to DECFLOAT on
+	// assignment: insignificant trailing zeros are stripped (12134567890E+3 →
+	// 1.213456789E+13, and a 40-digit literal ending in 0 loses that zero),
+	// and zero collapses to plain "0" regardless of its source scale. The
+	// stored value is what getString() then puts on the wire, so these
+	// goldens pin the post-normalization forms.
+	literals := []struct{ in, want string }{
+		{"123.456", "123.456"},
+		{"-123.456", "-123.456"},
+		{"0.001", "0.001"},
+		{"0.00", "0"},
+		{"000123", "123"},
+		{"5.", "5"},
+		{".25", "0.25"},
+		{"1E+7", "1E+7"},
+		{"1e7", "1E+7"},
+		{"1E-7", "1E-7"},
+		{"1.5e-25", "1.5E-25"},
+		{"123E-5", "0.00123"},
+		{"12134567890E+3", "1.213456789E+13"},
+		{"1234567890123456789012345678901234567890",
+			"1.23456789012345678901234567890123456789E+39"},
+	}
+	for i, tc := range literals {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO dec_probe VALUES (?, ?)", i+1, tc.in); err != nil {
+			t.Fatalf("insert %q: %v", tc.in, err)
+		}
+		var raw, casted string
+		if err := db.QueryRowContext(ctx,
+			"SELECT v, CAST(v AS VARCHAR) FROM dec_probe WHERE id = ?", i+1).
+			Scan(&raw, &casted); err != nil {
+			t.Fatalf("read %q: %v", tc.in, err)
+		}
+		if raw != tc.want {
+			t.Errorf("%q: driver decoded %q, want %q", tc.in, raw, tc.want)
+		}
+		if casted != tc.want {
+			t.Errorf("%q: server renders %q via CAST, want %q", tc.in, casted, tc.want)
+		}
+		df, perr := ParseDecFloat(raw)
+		if perr != nil {
+			t.Errorf("%q: ParseDecFloat: %v", raw, perr)
+			continue
+		}
+		if got := df.String(); got != tc.want {
+			t.Errorf("%q: DecFloat.String() = %q, want %q", raw, got, tc.want)
+		}
+	}
+
+	t.Run("special values", func(t *testing.T) {
+		tests := []struct {
+			expr   string
+			isInf  int // math.IsInf sign convention; 0 means NaN
+			golden string
+		}{
+			{"CAST('Infinity' AS DECFLOAT)", 1, "Infinity"},
+			{"CAST('-Infinity' AS DECFLOAT)", -1, "-Infinity"},
+			{"CAST('NaN' AS DECFLOAT)", 0, "NaN"},
+		}
+		for _, tc := range tests {
+			var df DecFloat
+			if err := db.QueryRowContext(ctx, "SELECT "+tc.expr).Scan(&df); err != nil {
+				t.Errorf("%s: scan into DecFloat: %v", tc.expr, err)
+				continue
+			}
+			if got := df.String(); got != tc.golden {
+				t.Errorf("%s: String() = %q, want %q", tc.expr, got, tc.golden)
+			}
+			if tc.isInf == 0 {
+				if !df.IsNaN() {
+					t.Errorf("%s: expected NaN", tc.expr)
+				}
+			} else if !df.IsInf(tc.isInf) {
+				t.Errorf("%s: expected infinity sign %d", tc.expr, tc.isInf)
+			}
+		}
+	})
+
+	t.Run("bound DecFloat write path", func(t *testing.T) {
+		df, err := ParseDecFloat("-98765.4321")
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO dec_probe VALUES (?, ?)", len(literals)+100, df); err != nil {
+			t.Fatalf("insert with bound DecFloat: %v", err)
+		}
+		var back DecFloat
+		if err := db.QueryRowContext(ctx,
+			"SELECT v FROM dec_probe WHERE id = ?", len(literals)+100).Scan(&back); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if !back.IsFinite() || back.Scale() != 4 || back.UnscaledInt().String() != "-987654321" {
+			t.Errorf("round trip mismatch: %q scale=%d unscaled=%v", back.String(), back.Scale(), back.UnscaledInt())
+		}
+	})
+}

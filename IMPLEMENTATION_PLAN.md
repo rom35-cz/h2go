@@ -838,7 +838,8 @@ Module/package: `github.com/rom35-cz/h2go` (package `h2go`)
 - Extended generated keys (multi-column / non-numeric). (Implemented in v0.2.0.)
 - LOB streaming (`LOB_READ`) for BLOB/CLOB. (Implemented in v0.2.0.)
 - JSON, DECFLOAT (exact decimal), ENUM, INTERVAL, ARRAY, ROW, GEOMETRY, JAVA_OBJECT decoding.
-  (JSON, ENUM, INTERVAL, ARRAY, ROW, GEOMETRY, JAVA_OBJECT implemented in v0.2.0; DECFLOAT remains as `string`.)
+  (JSON, ENUM, INTERVAL, ARRAY, ROW, GEOMETRY, JAVA_OBJECT implemented in v0.2.0; DECFLOAT exact
+  decoding via `h2go.DecFloat` implemented post-v0.2.0.)
 - Multiple result sets. (H2 native TCP protocol 21 does not support multiple result sets from a single query execution; `Rows.NextResultSet()` returns `io.EOF`.)
 - TLS/SSL TCP transport.
 - Benchmarks and allocation tuning.

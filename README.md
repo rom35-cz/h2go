@@ -150,6 +150,7 @@ The driver focuses on the MVP scalar set used by the test suite:
 | Integer widths (`TINYINT`, `SMALLINT`, `INTEGER`, `BIGINT`) | `int64` | Scanned as integers |
 | `REAL`, `DOUBLE` | `float64` | IEEE-754 values |
 | `NUMERIC` / `DECIMAL` | `string` | Exact decimal text to avoid precision loss |
+| `DECFLOAT` | `string` | Exact decimal text as H2 renders it (`BigDecimal.toString` semantics: scientific notation outside the plain window; special values `Infinity`, `-Infinity`, `NaN`). Scanned strings are validated against the wire grammar. Scan into `h2go.DecFloat` for an exact unscaled×10⁻ⁿ representation with `Scanner`/`Valuer` support |
 | `UUID` | `string` | Canonical 36-character textual form |
 | `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMP WITH TIME ZONE` | `time.Time` | Includes fractional-second precision |
 | `CHAR`, `VARCHAR` | `string` | Text values |
