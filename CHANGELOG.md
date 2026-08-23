@@ -6,6 +6,14 @@ All notable changes to `h2go` will be documented in this file.
 
 ### Added
 
+- Benchmarks: server-free microbenchmarks for the wire codec, DSN parsing,
+  value encoding, INTERVAL formatting and DECFLOAT parsing
+  (`make bench`), plus live round-trip benchmarks against a running H2
+  (`make bench-integration`). First tuning pass from the baselines: the
+  UTF-16 string codec gained ASCII fast paths — string writes drop from 3
+  to 1 allocation on both the ASCII and general paths (the general path now
+  encodes and serializes in a single fused pass), ASCII reads compact in
+  place and skip the UTF-16 decoder.
 - Per-statement generated-keys overrides: `ContextWithGeneratedKeys` /
   `ContextWithoutGeneratedKeys` attach a `GeneratedKeysRequest` to an
   `ExecContext` context; that request wins over the connection-level

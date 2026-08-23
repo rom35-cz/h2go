@@ -226,6 +226,28 @@ Round II deterministic-discard behavior (session aborted, error reported).
 Operations without server-side statement identity (prepare, handshake) still
 respect contexts but cannot be interrupted mid-execution on the server.
 
+## Benchmarks
+
+Microbenchmarks for the wire codec and parsing live next to the code; run
+them with `make bench` (server-free) or `make bench-integration`
+(full round trips against a running H2, see `h2-data/h2.sh`). Example
+baseline on an Intel i3-10110U laptop, Go 1.27:
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| ParseDSN | 856 | 768 | 5 |
+| Tr.WriteString (ASCII) | 122 | 96 | 1 |
+| Tr.ReadString (ASCII) | ~300 | 148–228 | 4 |
+| ValueWriteInt64 / ReadInt64 | 55 / 67 | 24 | 2 / 3 |
+| Integration SELECT 1 (ad-hoc) | ~148 µs | 1496 | 59 |
+| Integration SELECT 1 (prepared) | ~108 µs | 1312 | 52 |
+| Integration 100-row scan | ~216 µs | 13243 | 469 |
+
+The UTF-16 string codec has ASCII fast paths (single allocation per write,
+in-place compaction on read); non-ASCII text takes the general surrogate-
+aware path. Numbers vary run to run — treat them as order-of-magnitude
+baselines when profiling changes.
+
 ## Limitations
 
 Current scope intentionally excludes:

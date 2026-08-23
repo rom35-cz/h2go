@@ -1,4 +1,4 @@
-.PHONY: build vet lint fmt fmt-check test test-race test-integration test-integration-race db-seed db-tls clean
+.PHONY: build vet lint fmt fmt-check test test-race test-integration test-integration-race bench bench-integration db-seed db-tls clean
 
 build:
 	go build ./...
@@ -40,6 +40,18 @@ test-integration-race:
 	if [ -f h2-data/.env ]; then . ./h2-data/.env; fi; \
 	set +a; \
 	go test -tags=integration -race ./...
+
+## bench: pure/server-free microbenchmarks (wire codec, DSN, values).
+bench:
+	go test -run '^$$' -bench . -benchmem ./...
+
+## bench-integration: live-server round-trip benchmarks.
+## The server must be running first: cd h2-data && ./h2.sh
+bench-integration:
+	@set -a; \
+	if [ -f h2-data/.env ]; then . ./h2-data/.env; fi; \
+	set +a; \
+	go test -tags=integration -run '^$$' -bench Integration -benchmem .
 
 clean:
 	go clean ./...

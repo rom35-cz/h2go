@@ -9,6 +9,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // DefaultBufferSize is the default buffer size for the transfer stream.
@@ -178,18 +179,47 @@ func (t *Tr) WriteString(s string) error {
 	if t.w == nil {
 		return errors.New("Tr: write on read-only transfer")
 	}
-	// Encode to UTF-16 code units (non-BMP characters become surrogate pairs).
-	units := utf16Encode(s)
-	if err := t.WriteInt32(int32(len(units))); err != nil {
+	// ASCII fast path: one allocation, code units filled directly (every
+	// byte becomes one big-endian UTF-16 unit with a zero high byte).
+	if isASCII(s) {
+		data := make([]byte, 4+2*len(s))
+		binary.BigEndian.PutUint32(data, uint32(len(s)))
+		for i := 0; i < len(s); i++ {
+			data[4+2*i] = 0
+			data[5+2*i] = s[i]
+		}
+		_, err := t.w.Write(data)
 		return err
 	}
-	// Encode all code units into a single byte slice and write in one call.
-	data := make([]byte, len(units)*2)
-	for i, u := range units {
-		binary.BigEndian.PutUint16(data[i*2:], u)
+	// General path: encode to big-endian UTF-16 in a single pass with one
+	// allocation. Every code unit consumes at least one input byte, so
+	// 4+2*len(s) always suffices (worst case: all non-BMP surrogate pairs).
+	data := make([]byte, 4, 4+2*len(s))
+	for _, r := range s {
+		if r < 0x10000 {
+			u := uint16(r)
+			data = append(data, byte(u>>8), byte(u))
+		} else {
+			r -= 0x10000
+			hi := 0xD800 | uint16(r>>10)
+			lo := 0xDC00 | uint16(r&0x3FF)
+			data = append(data, byte(hi>>8), byte(hi), byte(lo>>8), byte(lo))
+		}
 	}
+	binary.BigEndian.PutUint32(data[:4], uint32((len(data)-4)/2))
 	_, err := t.w.Write(data)
 	return err
+}
+
+// isASCII reports whether s consists only of bytes below UTF8.RuneSelf,
+// i.e. encodes identically in UTF-8 and single-unit UTF-16.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // WriteNullString writes a null string marker (length -1).
@@ -319,8 +349,22 @@ func (t *Tr) ReadString() (*string, error) {
 		return nil, err
 	}
 	units := make([]uint16, length)
+	ascii := length > 0
 	for i := int32(0); i < length; i++ {
-		units[i] = binary.BigEndian.Uint16(raw[i*2:])
+		u := binary.BigEndian.Uint16(raw[i*2:])
+		units[i] = u
+		if u >= utf8.RuneSelf {
+			ascii = false
+		}
+	}
+	if ascii {
+		// Pure-ASCII payload: compact the low bytes in place (the write
+		// index never passes the read index) and skip the UTF-16 decoder.
+		for i := 1; i < len(raw); i += 2 {
+			raw[i/2] = raw[i]
+		}
+		s := string(raw[:length])
+		return &s, nil
 	}
 	s := utf16Decode(units)
 	return &s, nil
