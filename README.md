@@ -169,6 +169,7 @@ parameters (`...?IFEXISTS=TRUE`) follow H2's own client policy:
 |---|---|---|
 | Consumed | `USER`, `PASSWORD` | Extracted into `Config.User` / `Config.Password` |
 | **Forwarded to the server** | `IFEXISTS`, `ACCESS_MODE_DATA` (`r`/`rw`/`rws`), `INIT`, `MODE`, `LOCK_TIMEOUT`, `FORBID_CREATION` | Sent in the handshake property map; the **server enforces them** when opening the database — exactly like H2 JDBC |
+| **Applied by the driver** | `QUERY_TIMEOUT` (ms) | Issued as `SET QUERY_TIMEOUT` on the session after connect (like H2 JDBC); over-long statements are canceled server-side with error 57014 while the session stays usable. Session-global for the pooled connection |
 | Accepted, no effect | `AUTO_SERVER`, `AUTO_RECONNECT`, `OPEN_NEW`, `DB_CLOSE_DELAY`, `DB_CLOSE_ON_EXIT`, `FILE_LOCK`, `CIPHER`, `RECOVER`, `PAGE_SIZE`, `NETWORK_TIMEOUT`, `STATEMENT_CACHE_SIZE`, `TRACE_LEVEL_*`, `NON_KEYWORDS`, `JMX`, `OLD_INFORMATION_SCHEMA` | Embedded/JDBC-client-only settings; kept for URL compatibility, ignored by this pure-TCP driver |
 | Unknown | anything else | **Rejected at parse time** unless the DSN also carries `IGNORE_UNKNOWN_SETTINGS=TRUE` (H2 semantics) |
 
@@ -257,6 +258,12 @@ baselines when profiling changes.
   (side-channel cancel); the caller sees `context.DeadlineExceeded` /
   `context.Canceled` and the connection survives. See "Context cancellation"
   above.
+- For a statement timeout independent of Go contexts, set `QUERY_TIMEOUT=<ms>`
+  in the DSN: H2 itself cancels over-long statements (error 57014) without
+  tearing down the session.
+- Fault injection (`fault_test.go`) and a bounded soak test (`make soak`,
+  `H2GO_SOAK_SECONDS` for longer runs) exercise server kills, mid-stream
+  disconnects, restart recovery and pool churn with leak guards.
 
 ## Limitations
 

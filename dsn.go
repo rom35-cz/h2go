@@ -375,6 +375,12 @@ func validateParams(params map[string]string) error {
 			ignoreUnknown = isTruthy(params[k])
 		case "USER", "PASSWORD":
 			// consumed into Config before validate runs; tolerate remnants
+		case "QUERY_TIMEOUT":
+			// Applied by the driver after handshake (SET QUERY_TIMEOUT);
+			// validate the format here so failures happen before dialing.
+			if _, err := strconv.Atoi(strings.TrimSpace(params[k])); err != nil {
+				return fmt.Errorf("invalid DSN setting QUERY_TIMEOUT=%q: must be a non-negative integer (milliseconds)", params[k])
+			}
 		default:
 			if !forwardSettings[strings.ToUpper(k)] && !localOnlySettings[strings.ToUpper(k)] {
 				unknown = append(unknown, k)

@@ -3,8 +3,10 @@ package h2go
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -52,6 +54,26 @@ func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 	}
 
 	logConfig(c.cfg, slog.LevelDebug, "connect established")
+
+	// Client-applied session settings: QUERY_TIMEOUT mirrors H2 JDBC's own
+	// behavior of issuing SET QUERY_TIMEOUT on the session (JdbcConnection
+	// prepares exactly that statement). It is session-global and persists for
+	// the life of the pooled connection.
+	if v, ok := c.cfg.Params["QUERY_TIMEOUT"]; ok {
+		ms, perr := strconv.Atoi(strings.TrimSpace(v))
+		if perr != nil || ms < 0 {
+			_ = sess.Close()
+			return nil, fmt.Errorf("h2go: invalid QUERY_TIMEOUT %q: must be a non-negative integer (milliseconds)", v)
+		}
+		if ms > 0 {
+			if _, uerr := sess.ExecuteUpdate(ctx, fmt.Sprintf("SET QUERY_TIMEOUT %d", ms)); uerr != nil {
+				_ = sess.Close()
+				return nil, fmt.Errorf("h2go: applying QUERY_TIMEOUT: %w", uerr)
+			}
+			logConfig(c.cfg, slog.LevelDebug, "session query timeout applied", slog.Int("millis", ms))
+		}
+	}
+
 	return &conn{
 		sess: sess,
 	}, nil

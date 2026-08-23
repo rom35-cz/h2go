@@ -1,4 +1,4 @@
-.PHONY: build vet lint fmt fmt-check test test-race test-integration test-integration-race bench bench-integration db-seed db-tls clean
+.PHONY: build vet lint fmt fmt-check test test-race test-integration test-integration-race bench bench-integration soak db-seed db-tls clean
 
 build:
 	go build ./...
@@ -72,3 +72,11 @@ db-seed:
 ##   export JDBC_TLS_URL="jdbc:h2:ssl://localhost:9093/h2-go"
 db-tls:
 	cd h2-data && ./gen-tls-certs.sh && ./h2-tls.sh
+
+## soak: run the bounded soak test (default 60s; override via H2GO_SOAK_SECONDS).
+## The server must be running first: cd h2-data && ./h2.sh
+soak:
+	@set -a; \
+	if [ -f h2-data/.env ]; then . ./h2-data/.env; fi; \
+	set +a; \
+	H2GO_SOAK_SECONDS=$${H2GO_SOAK_SECONDS:-60} go test -tags=integration -count=1 -run 'TestIntegration_Soak' -v .

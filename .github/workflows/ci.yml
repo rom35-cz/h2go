@@ -189,6 +189,14 @@ jobs:
           JDBC_TLS_URL: jdbc:h2:ssl://localhost:9093/ci-go-test
         run: go test -tags=integration -count=1 -race ./...
 
+      - name: Soak (25s churn + leak guards)
+        env:
+          JDBC_URL: jdbc:h2:tcp://localhost:9092/ci-go-test
+          JDBC_USER: sa
+          JDBC_PASSWORD: sa
+          H2GO_SOAK_SECONDS: "25"
+        run: go test -tags=integration -count=1 -run 'TestIntegration_Soak' -v .
+
       - name: Upload test logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

@@ -2869,3 +2869,62 @@ func TestIntegration_DsnSettings(t *testing.T) {
 		}
 	})
 }
+
+// TestIntegration_QueryTimeout verifies Tier B query-timeout parity: a
+// QUERY_TIMEOUT DSN setting is applied as SET QUERY_TIMEOUT on the session
+// (like H2's own JDBC client), the server cancels an over-long statement with
+// its aligned cancellation error (57014), and the session survives.
+func TestIntegration_QueryTimeout(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	base, err := ParseDSN(env["JDBC_URL"])
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	cfg := *base
+	cfg.Database = "qto_" + uuid.NewString()[:8]
+	cfg.Params = map[string]string{"QUERY_TIMEOUT": "300"}
+	MergeCredentials(&cfg, env["JDBC_USER"], env["JDBC_PASSWORD"])
+
+	db, err := OpenDB(&cfg)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	// Sanity: short statements are unaffected.
+	var v int
+	start := time.Now()
+	if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&v); err != nil || v != 1 {
+		t.Fatalf("short query under timeout: %v (%d)", err, v)
+	}
+
+	// Long statement: server-side cancel must land near the 300ms budget —
+	// well before this test's own generous watchdog.
+	errCh := make(chan error, 1)
+	go func() {
+		var n int64
+		errCh <- db.QueryRowContext(ctx, faultLongQuery).Scan(&n)
+	}()
+	select {
+	case qerr := <-errCh:
+		if qerr == nil {
+			t.Fatal("long query completed despite QUERY_TIMEOUT")
+		}
+		if !strings.Contains(qerr.Error(), "cancel") &&
+			!strings.Contains(qerr.Error(), "57014") {
+			t.Errorf("timeout error %q should indicate cancellation (57014)", qerr)
+		}
+		t.Logf("server canceled after %v: %v", time.Since(start).Round(time.Millisecond), qerr)
+	case <-time.After(10 * time.Second):
+		t.Fatal("query ran >10s despite QUERY_TIMEOUT=300")
+	}
+
+	// Session survives the server-side timeout.
+	if err := db.QueryRowContext(ctx, "SELECT 2").Scan(&v); err != nil || v != 2 {
+		t.Errorf("post-timeout query: %v (%d)", err, v)
+	}
+}
