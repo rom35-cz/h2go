@@ -40,10 +40,15 @@
 //
 //	jdbc:h2:tcp://host:port/database
 //
-// And native Go DSNs:
+// native Go DSNs:
 //
 //	h2://user:password@host:port/database
 //	h2+tcp://user:password@host:port/database
+//
+// and their TLS variants (for servers started with -tcpSSL):
+//
+//	jdbc:h2:ssl://host:port/database
+//	h2+ssl://user:password@host:port/database
 //
 // The default TCP port is 9092 if omitted. Diagnostic logging is optional and
 // disabled unless a logger is explicitly provided in Config.Logger.
@@ -65,7 +70,17 @@
 // rows are prefetched per batch while streaming results (0 means the driver
 // default of 100).
 //
+// # Generated keys and per-statement overrides
+//
+// Generated keys are requested automatically for updates, like JDBC's
+// Statement.RETURN_GENERATED_KEYS; the connection-level mode family lives in
+// Config (GeneratedKeysMode & friends), and ContextWithGeneratedKeys /
+// ContextWithoutGeneratedKeys override it for a single statement. The full
+// multi-column/multi-row keys result is reachable through
+// GeneratedKeysProvider on results obtained via sql.Conn.Raw.
+//
 // # Status
 //
 // This package is under development. Not yet ready for production use.
+// Licensed under the MIT license; see LICENSE.
 package h2go

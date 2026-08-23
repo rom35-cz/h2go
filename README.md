@@ -305,3 +305,17 @@ Notes on column metadata:
 ## Repository
 
 [github.com/rom35-cz/h2go](https://github.com/rom35-cz/h2go)
+
+## Requirements
+
+- Go 1.22 or later (module `github.com/rom35-cz/h2go`, package `h2go`, no
+  CGO — pure Go, `CGO_ENABLED=0` supported).
+- H2 Database **2.4.240 or later** running as a TCP server (`org.h2.tools.Server`),
+  speaking native **protocol version 21**. Embedded/In-Memory JVM modes are
+  out of scope by design.
+- The only runtime dependency is `github.com/google/uuid` (connection IDs);
+  the dependency tree stays tiny on purpose.
+
+## License
+
+[MIT](LICENSE) © rom35-cz

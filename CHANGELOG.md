@@ -6,6 +6,8 @@ All notable changes to `h2go` will be documented in this file.
 
 ### Added
 
+- MIT LICENSE, CONTRIBUTING.md and SECURITY.md — the module is now
+  packaged for public consumption as a `database/sql` driver.
 - Benchmarks: server-free microbenchmarks for the wire codec, DSN parsing,
   value encoding, INTERVAL formatting and DECFLOAT parsing
   (`make bench`), plus live round-trip benchmarks against a running H2
