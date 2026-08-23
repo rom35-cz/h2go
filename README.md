@@ -1,5 +1,7 @@
 # h2go — pure Go H2 Database driver for database/sql
 
+[![CI](https://github.com/rom35-cz/h2go/actions/workflows/ci.yml/badge.svg)](https://github.com/rom35-cz/h2go/actions/workflows/ci.yml)
+
 **Status:** Under development. Not yet ready for production use.
 
 `h2go` is a pure Go [`database/sql`](https://pkg.go.dev/database/sql) driver for [H2 Database](https://www.h2database.com/) running in **native TCP server mode**. It speaks H2 **protocol 21** directly — no PostgreSQL compatibility mode, no JDBC bridge, no JVM embedding, and no CGO.
