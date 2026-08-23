@@ -10,8 +10,8 @@ Registered SQL driver name: `h2`
 
 Before planning or implementing project work, read these files in order:
 
-1. `PRD.md` — product requirements, scope, non-goals, accepted decisions, and acceptance criteria.
-2. `IMPLEMENTATION_PLAN.md` — serial implementation phases and tasks. Work should follow this plan unless the user explicitly changes it.
+1. `docs/internal/PRD.md` — product requirements, scope, non-goals, accepted decisions, and acceptance criteria.
+2. `docs/internal/IMPLEMENTATION_PLAN.md` — serial implementation phases and tasks. Work should follow this plan unless the user explicitly changes it.
 3. `FEASIBILITY_STUDY.md` — background research and protocol feasibility details. Read when protocol context, rationale, or tradeoffs are needed.
 
 ## Project Structure
@@ -19,9 +19,11 @@ Before planning or implementing project work, read these files in order:
 Current repository layout:
 
 - `AGENTS.md` — agent instructions for this repository.
-- `PRD.md` — product requirements document. Treat as the authoritative requirements source.
-- `IMPLEMENTATION_PLAN.md` — detailed serial implementation plan. Treat as the authoritative task sequencing source.
-- `FEASIBILITY_STUDY.md` — feasibility study and research notes.
+- `README.md`, `CHANGELOG.md`, `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md` — public-facing documentation.
+- `docs/internal/` — working documents (requirements, plans, maturity audits): `PRD.md`,
+  `IMPLEMENTATION_PLAN.md`, `FEASIBILITY_STUDY.md`, `MATURITY_MVP.md`, `PLAN_MVP_FIX.md`,
+  `MATURITY_ROUND_II.md`, `MATURITY_ROUND_II_PLAN.md`, plus the local scratch `TASKLIST.md`.
+- `docs/ACCEPTANCE.md` — acceptance traceability for releases.
 - `h2-data/` — local H2 test environment.
   - `.env` — local credentials/config; sensitive, do not commit secrets elsewhere and do not copy values into docs.
   - `h2-2.4.240.jar` — local H2 server jar for integration testing.
@@ -29,7 +31,7 @@ Current repository layout:
   - `data/` — local H2 database files; generated/local state.
 - `h2-src/` — local H2 source/reference material if present.
 
-Expected future Go project layout, unless changed in `IMPLEMENTATION_PLAN.md`:
+Expected future Go project layout, unless changed in `docs/internal/IMPLEMENTATION_PLAN.md`:
 
 - `go.mod` — module `github.com/rom35-cz/h2go`.
 - `doc.go` — package docs for `package h2go`.
@@ -47,7 +49,7 @@ Expected future Go project layout, unless changed in `IMPLEMENTATION_PLAN.md`:
 
 ## Implementation Rules
 
-- Follow `IMPLEMENTATION_PLAN.md` task order. Complete one task at a time.
+- Follow `docs/internal/IMPLEMENTATION_PLAN.md` task order (historical phases are complete; consult before protocol work). Complete one task at a time.
 - At the end of every implementation task, the repository should be in a consistent state:
   - `go build ./...` passes.
   - `go vet ./...` passes.

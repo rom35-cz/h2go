@@ -1,5 +1,5 @@
 // stream_discard_test.go — unit tests for deterministic session discard on
-// mid-stream decode errors (MATURITY_ROUND_II_PLAN.md Task 5, finding 6).
+// mid-stream decode errors (docs/internal/MATURITY_ROUND_II_PLAN.md Task 5, finding 6).
 
 package h2go
 

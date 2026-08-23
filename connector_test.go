@@ -1,5 +1,5 @@
 // connector_test.go — tests for connector-level behaviour, including the
-// ignored-DSN-parameters debug log (MATURITY_ROUND_II_PLAN.md Task 6,
+// ignored-DSN-parameters debug log (docs/internal/MATURITY_ROUND_II_PLAN.md Task 6,
 // finding 7).
 
 package h2go

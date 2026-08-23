@@ -1,5 +1,5 @@
 // lob_test.go — unit tests for deferred fetch-on-demand LOB resolution at
-// batch boundaries (MATURITY_ROUND_II_PLAN.md Task 1, finding 1).
+// batch boundaries (docs/internal/MATURITY_ROUND_II_PLAN.md Task 1, finding 1).
 
 package h2go
 

@@ -1,9 +1,9 @@
 // interval_test.go — golden-string tests for canonical INTERVAL text
-// formatting (MATURITY_ROUND_II_PLAN.md Task 2, finding 3).
+// formatting (docs/internal/MATURITY_ROUND_II_PLAN.md Task 2, finding 3).
 //
 // Every golden string was live-verified against H2 2.4.240 via
 // SELECT CAST(<expression> AS VARCHAR) on 2026-08-22 (see the matrix in
-// MATURITY_ROUND_II_PLAN.md Task 2 and TestIntegration_IntervalCanonicalMatrix
+// docs/internal/MATURITY_ROUND_II_PLAN.md Task 2 and TestIntegration_IntervalCanonicalMatrix
 // for the permanent live check).
 
 package h2go

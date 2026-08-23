@@ -1,5 +1,5 @@
 // wire_caps_test.go — unit tests for wire-controlled length/count caps
-// (MATURITY_ROUND_II_PLAN.md Task 4, findings 5 and 17).
+// (docs/internal/MATURITY_ROUND_II_PLAN.md Task 4, findings 5 and 17).
 //
 // The oversized values here are kept just above their caps: if a guard were
 // removed, the test would visibly OOM or hang on stream EOF rather than

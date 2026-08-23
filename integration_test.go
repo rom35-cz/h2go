@@ -1545,7 +1545,7 @@ func TestIntegration_TypeShowcaseFullSelect(t *testing.T) {
 
 // TestIntegration_ComplexTypeDecoding verifies that ENUM, INTERVAL, ARRAY,
 // and ROW values decode to their exact documented representations.
-// MATURITY_ROUND_II_PLAN.md Task 8 (finding 9): these are golden-string
+// docs/internal/MATURITY_ROUND_II_PLAN.md Task 8 (finding 9): these are golden-string
 // assertions, not Contains checks — a formatting regression must fail here.
 // The ARRAY NULL-element rendering "<nil>" is pinned by this test (Task 8 owns
 // the behavior contract); Task 9 documents it in the README.
@@ -1630,7 +1630,7 @@ func TestIntegration_ComplexTypeDecoding(t *testing.T) {
 // exceeding the inline threshold are fetched via LOB_READ requests, and —
 // after the Task 1 fix — regardless of where the LOB appears in the result
 // batch: followed by more columns, more rows, or across fetch-size boundaries
-// (MATURITY_ROUND_II_PLAN.md Task 1, finding 1).
+// (docs/internal/MATURITY_ROUND_II_PLAN.md Task 1, finding 1).
 func TestIntegration_FetchOnDemandLOB(t *testing.T) {
 	env := integrationEnv(t)
 	if env == nil {
@@ -1912,7 +1912,7 @@ func TestIntegration_GeneratedKeysWithLob(t *testing.T) {
 
 // TestIntegration_IntervalCanonicalMatrix compares the driver's INTERVAL
 // decoding against H2's own canonical text (CAST(... AS VARCHAR)) for every
-// qualifier, live (MATURITY_ROUND_II_PLAN.md Task 2, finding 3).
+// qualifier, live (docs/internal/MATURITY_ROUND_II_PLAN.md Task 2, finding 3).
 func TestIntegration_IntervalCanonicalMatrix(t *testing.T) {
 	env := integrationEnv(t)
 	if env == nil {

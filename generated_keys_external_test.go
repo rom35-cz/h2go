@@ -6,7 +6,7 @@
 // returned by db.Exec intentionally does NOT expose it because database/sql
 // wraps driver results in its own unexported type.
 //
-// MATURITY_ROUND_II_PLAN.md Task 3 (finding 4).
+// docs/internal/MATURITY_ROUND_II_PLAN.md Task 3 (finding 4).
 
 package h2go_test
 

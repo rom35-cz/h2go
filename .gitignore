@@ -34,7 +34,7 @@ h2database/
 .pi-subagents/
 
 # Local working notes
-/TASKLIST.md
+/docs/internal/TASKLIST.md
 
 # Local TLS test artifacts (generated)
 h2-data/tls/
