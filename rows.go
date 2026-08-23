@@ -659,15 +659,12 @@ func (s *Session) executeQueryWire(ctx context.Context, cmd *PreparedCommand, ma
 		return nil, fmt.Errorf("h2go: executeQueryWire: flush failed: %w", err)
 	}
 
-	// Check context cancellation after flush (before blocking on response).
-	select {
-	case <-ctx.Done():
-		if ownsCommand {
-			_ = cmd.Close(s)
-		}
-		return nil, ctx.Err()
-	default:
-	}
+	// No post-flush ctx poll: once COMMAND_EXECUTE_QUERY is on the wire the
+	// response must be consumed to keep the stream aligned. A ctx firing in
+	// this window triggers the side-channel cancel (registered with
+	// beginOperationContext) and is resolved by the response read below —
+	// either as the server's aligned cancellation report or, failing that,
+	// as a timeout that finalizeContext turns into a deterministic abort.
 
 	// Server responds: writeInt(status) . writeInt(columnCount) . writeRowCount . columns . firstBatch
 	if err = readStatus(s.tr); err != nil {

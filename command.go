@@ -114,11 +114,10 @@ func (s *Session) PrepareCommand(ctx context.Context, sql string) (cmd *Prepared
 		return nil, fmt.Errorf("h2go: PrepareCommand: flush failed: %w", err)
 	}
 
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
+	// No post-flush ctx poll: once the request is on the wire the response
+	// must be consumed to keep the stream aligned. A ctx firing in this
+	// window surfaces as a transport timeout on the read below and is
+	// translated (with a deterministic abort) by finalizeContext.
 
 	// Read response.
 	// Server: writeInt(status) . writeBoolean(isQuery) . writeBoolean(readOnly) . writeInt(paramCount)
@@ -190,11 +189,8 @@ func (s *Session) PrepareCommandReadParams(ctx context.Context, sql string) (cmd
 		return nil, fmt.Errorf("h2go: PrepareCommandReadParams: flush failed: %w", err)
 	}
 
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
+	// See PrepareCommand: no post-flush ctx poll — the response must be
+	// consumed to keep the stream aligned.
 
 	// Read response
 	// Server sends: status, isQuery (boolean), readOnly (boolean), cmdType (int), paramCount (int)

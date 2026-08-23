@@ -2617,3 +2617,55 @@ func TestIntegration_TLSTransport(t *testing.T) {
 		}
 	})
 }
+
+// TestIntegration_StatementCancellation verifies deep statement cancellation
+// (post-v0.2.0 backlog item #5): a context deadline during a long-running
+// query fires the side-channel SESSION_CANCEL_STATEMENT, the driver surfaces
+// context.DeadlineExceeded, and the SAME connection remains usable because
+// the server's aligned cancellation report was consumed instead of the
+// session being aborted.
+func TestIntegration_StatementCancellation(t *testing.T) {
+	env := integrationEnv(t)
+	if env == nil {
+		t.Skip("integration test skipped: env not available")
+	}
+	db := integrationDB(t, env)
+	ctx := context.Background()
+
+	// Pin one pooled connection so the before/after probes provably hit the
+	// same session that ran the cancelled statement.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer conn.Close()
+
+	var one int
+	if err := conn.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil || one != 1 {
+		t.Fatalf("pre-check: %v (got %d)", err, one)
+	}
+
+	// A cartesian product far too large to finish: the server must still be
+	// executing when the deadline fires.
+	queryCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, queryErr := conn.QueryContext(queryCtx,
+		"SELECT COUNT(*) FROM SYSTEM_RANGE(1, 10000000) A, SYSTEM_RANGE(1, 1000000) B")
+	elapsed := time.Since(start)
+
+	if !errors.Is(queryErr, context.DeadlineExceeded) {
+		t.Fatalf("cancelled query error = %v, want context.DeadlineExceeded", queryErr)
+	}
+	t.Logf("query cancelled after %v", elapsed)
+
+	var two int
+	if err := conn.QueryRowContext(ctx, "SELECT 2").Scan(&two); err != nil || two != 2 {
+		t.Fatalf("post-cancel same-connection query failed: %v (got %d)", err, two)
+	}
+
+	// And the pool as a whole stays healthy.
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatalf("ping after cancellation: %v", err)
+	}
+}

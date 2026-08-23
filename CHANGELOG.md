@@ -6,6 +6,13 @@ All notable changes to `h2go` will be documented in this file.
 
 ### Added
 
+- Deep statement cancellation: context cancellation during a running query
+  or update now fires H2's side-channel `SESSION_CANCEL_STATEMENT` and waits
+  for the server's aligned "statement was canceled" report (vendor code
+  57014 / SQLState HY008). The caller gets `context.DeadlineExceeded` /
+  `context.Canceled` while the session survives — previously any mid-query
+  cancellation aborted the connection. If the cancel cannot reach the
+  server, the deterministic-discard abort behavior applies as before.
 - TLS transport support: `ssl://` DSNs (`jdbc:h2:ssl://...`, `h2+ssl://...`)
   and programmatic `Config.TLS` now wrap the connection in crypto/tls after
   dialing, targeting servers started with H2's `-tcpSSL` flag. Verification

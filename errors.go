@@ -18,6 +18,13 @@ type Error struct {
 	StackTrace string
 }
 
+// ErrorCodeStatementWasCanceled is H2's vendor code for a statement canceled
+// via Statement.cancel()/SESSION_CANCEL_STATEMENT (SQLState HY008). The
+// context machinery uses it to recognize that the server itself stopped the
+// statement after a side-channel cancel, meaning the session stream is
+// aligned and stays usable.
+const ErrorCodeStatementWasCanceled int32 = 57014
+
 // H2Error is kept as a compatibility alias for older code and tests.
 type H2Error = Error
 

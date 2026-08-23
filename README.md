@@ -192,15 +192,28 @@ ENUM *parameters* are sent as VARCHAR and coerced by the server on arrival.
 
 Unsupported H2 types return a clear error or a documented fallback value.
 
+## Context cancellation
+
+Context deadlines/cancellation are honored deeply: when a query or update is
+interrupted, the driver fires H2's side-channel `SESSION_CANCEL_STATEMENT`
+request so the **server** stops the running statement. The driver then waits
+(up to an internal grace period) for the server's aligned "statement was
+canceled" report on the main connection; the caller observes
+`context.DeadlineExceeded` / `context.Canceled` while the session stays
+usable — no connection teardown, unlike naive timeout handling. If the
+server cannot be reached for the cancel, the operation falls back to the
+Round II deterministic-discard behavior (session aborted, error reported).
+
+Operations without server-side statement identity (prepare, handshake) still
+respect contexts but cannot be interrupted mid-execution on the server.
+
 ## Limitations
 
 Current scope intentionally excludes:
 
 - PostgreSQL compatibility mode
 - JDBC bridge / embedded JVM integration
-- TLS/SSL transport
 - multiple result sets
-- exact-decimal helper APIs beyond string-based `NUMERIC`
 - extended generated-key APIs beyond the `LastInsertId()` path: the full
   multi-column / multi-row keys are reachable only at the driver level,
   because `database/sql` wraps results (a plain `sql.Result` cannot be

@@ -175,6 +175,16 @@ func (s *Session) finalizeContext(ctx context.Context, errp *error) {
 		return
 	}
 	if ctx != nil && ctx.Err() != nil {
+		// If the operation failed with the server's own "statement was
+		// canceled" report, the frame was fully parsed and the stream is
+		// aligned: the side-channel cancel did its job and the session stays
+		// usable. Translate to the context error for the caller instead of
+		// aborting.
+		var h2e *Error
+		if errors.As(*errp, &h2e) && h2e.Code == ErrorCodeStatementWasCanceled {
+			*errp = ctx.Err()
+			return
+		}
 		_ = s.Abort()
 		*errp = ctx.Err()
 		return
