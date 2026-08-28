@@ -11,6 +11,9 @@ All notable changes to `h2go` will be documented in this file.
   handles hostile/broken streams without panicking, hanging, or allocating
   unbounded memory. Seed corpora run as ordinary tests; `make fuzz` runs a
   60s session per target.
+- README: new "Running H2 in server mode" reference section covering the
+  `org.h2.tools.Server` startup command, `-ifNotExists` auto-create and
+  first-user semantics, `-baseDir` resolution, and credential passing.
 
 ### Fixed
 

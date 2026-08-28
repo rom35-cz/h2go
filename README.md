@@ -45,6 +45,58 @@ if err != nil {
 }
 ```
 
+## Running H2 in server mode
+
+The driver speaks H2's native **TCP protocol**, so the database must be
+running as a TCP server (`org.h2.tools.Server`); embedded/in-memory
+connections are not supported. To start one:
+
+```bash
+# Download the H2 jar, or use the distribution zip from h2database.com:
+curl -fsSL -o h2-2.4.240.jar \
+  https://repo1.maven.org/maven2/com/h2database/h2/2.4.240/h2-2.4.240.jar
+
+# Start a TCP server on the default port (9092):
+java -cp h2-2.4.240.jar org.h2.tools.Server \
+  -tcp -tcpPort 9092 \
+  -tcpAllowOthers \
+  -ifNotExists \
+  -baseDir "$PWD/h2data"
+```
+
+The server prints a line like `TCP server running at tcp://...:9092` when
+ready. Important flags:
+
+- `-tcp` enables the native TCP server (default port `9092`).
+- `-tcpAllowOthers` accepts connections from other hosts; omit it to serve
+  localhost only.
+- `-ifNotExists` auto-creates the database on first connect. Without it,
+  connecting to a nonexistent database fails with H2 error `90149`
+  ("Database ... not found") — see `FORBID_CREATION` in the DSN parameters
+  section for the client-side counterpart.
+- `-baseDir` is where database files are stored. Use an **absolute** path;
+  a database name in the connection URL resolves relative to it
+  (`mydb` → `<baseDir>/mydb.mv.db`).
+
+When `-ifNotExists` auto-creates a database, the user from the first
+connection becomes its initial (and only) user, so connect with the account
+you want to own the database:
+
+```go
+db, err := sql.Open("h2",
+    "jdbc:h2:tcp://localhost:9092/mydb;USER=myuser;PASSWORD=secret")
+```
+
+or pass credentials programmatically with `ParseDSN` + `MergeCredentials`
+(see Quick start), or via the native URL userinfo (`h2://user:pass@host:9092/...`).
+Switching to a username that does not exist yet, or a wrong password, fails
+with H2 error `28000` ("Wrong user name or password") until the first
+connection created the database.
+
+For TLS, start the server with `-tcpSSL` and use an `ssl://` DSN — see the
+TLS section below. The repository's own `h2-data/h2.sh` starts this exact
+plain server for local testing.
+
 ## Local H2 test environment
 
 Local integration tests expect these environment variables:
@@ -53,7 +105,10 @@ Local integration tests expect these environment variables:
 - `JDBC_USER`
 - `JDBC_PASSWORD`
 
-A convenient local setup is `h2-data/.env` in this repository. Integration tests and examples skip cleanly when the variables are unavailable.
+A convenient local setup is `h2-data/.env` in this repository. Start the
+server with `cd h2-data && ./h2.sh` (adds a TLS instance via `make db-tls`).
+Integration tests and examples skip cleanly when the variables are
+unavailable.
 
 ## Diagnostic logging
 
