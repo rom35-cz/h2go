@@ -11,6 +11,14 @@ All notable changes to `h2go` will be documented in this file.
   `IGNORE_UNKNOWN_SETTINGS` semantics. URLs carrying unrecognized parameters
   fail with an error naming them; add `IGNORE_UNKNOWN_SETTINGS=TRUE` to keep
   accepting them.
+- **Breaking:** DSN settings without `=` (bare keys such as `;IFEXISTS`) are
+  rejected with H2's URL format error semantics (90046), matching the real
+  JDBC client. Accepting them silently forwarded an empty value
+  (`IFEXISTS` without a value parses as `FALSE`), defeating the setting.
+- DSN parsing now honors H2's backslash escaping for setting values: `\;`
+  inside a value is a literal semicolon (`StringUtils.arraySplit` parity),
+  so multi-statement `INIT=...\;...` URLs work as they do with JDBC. Empty
+  settings segments (e.g. a trailing `;`) are skipped like H2 does.
 
 ### Added
 
@@ -20,6 +28,10 @@ All notable changes to `h2go` will be documented in this file.
   (the same channel H2's own JDBC client uses), so read-only sessions,
   missing-database failures and compatibility modes behave as JDBC users
   expect.
+- Live integration coverage for the forwarded settings: `FORBID_CREATION`
+  on missing databases (90149), `MODE=Oracle` concatenation semantics,
+  multi-statement `INIT` execution, and `LOCK_TIMEOUT` row-contention
+  timeouts (50200), plus the 90046 format-error rejection.
 - Case-insensitive duplicate DSN settings with conflicting values are a parse
   error (`DUPLICATE_PROPERTY` semantics); identical repeats collapse.
 - CI runs the live-H2 integration matrix against both H2 2.4.240 and the

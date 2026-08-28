@@ -180,13 +180,77 @@ func TestParseDSN_MultipleSemicolonParams(t *testing.T) {
 }
 
 func TestParseDSN_ParamWithoutValue(t *testing.T) {
-	input := "jdbc:h2:tcp://localhost:9092/db;IFEXISTS" // known setting, no value
+	// H2's client rejects a setting without '=' with URL format error 90046;
+	// accepting it would forward an empty value ("IFEXISTS" would parse as
+	// FALSE) and silently defeat the setting.
+	input := "jdbc:h2:tcp://localhost:9092/db;IFEXISTS"
+	_, err := ParseDSN(input)
+	if err == nil {
+		t.Fatal("expected format error for bare setting")
+	}
+	for _, want := range []string{"IFEXISTS", "90046"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
+	}
+}
+
+func TestParseDSN_EscapedSemicolonInValue(t *testing.T) {
+	// H2 escapes ';' inside a setting value as "\;" (arraySplit semantics);
+	// multi-statement INIT=... is the canonical use.
+	input := "jdbc:h2:tcp://localhost:9092/db;INIT=CREATE TABLE IF NOT EXISTS x(v INT)\\;INSERT INTO x VALUES(1)"
 	cfg, err := ParseDSN(input)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("escaped INIT rejected: %v", err)
 	}
-	if cfg.Params["IFEXISTS"] != "" {
-		t.Errorf("Params[IFEXISTS] = %q, want empty string", cfg.Params["IFEXISTS"])
+	want := "CREATE TABLE IF NOT EXISTS x(v INT);INSERT INTO x VALUES(1)"
+	if cfg.Params["INIT"] != want {
+		t.Errorf("INIT = %q, want %q", cfg.Params["INIT"], want)
+	}
+	if len(cfg.Params) != 1 {
+		t.Errorf("Params has %d entries, want 1 (escaped ';' must not split): %v", len(cfg.Params), cfg.Params)
+	}
+}
+
+func TestParseDSN_TrailingSemicolonSkipped(t *testing.T) {
+	// H2 skips empty settings segments; a trailing ';' is not an error.
+	input := "jdbc:h2:tcp://localhost:9092/db;IFEXISTS=TRUE;"
+	cfg, err := ParseDSN(input)
+	if err != nil {
+		t.Fatalf("trailing semicolon rejected: %v", err)
+	}
+	if cfg.Params["IFEXISTS"] != "TRUE" {
+		t.Errorf("IFEXISTS = %q, want TRUE", cfg.Params["IFEXISTS"])
+	}
+}
+
+func TestSplitSettingSegments(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"", []string{""}},
+		{"a;b", []string{"a", "b"}},
+		{`a\;b`, []string{"a;b"}},           // escaped separator
+		{`a\\;b`, []string{`a\`, "b"}},      // escaped backslash then separator
+		{`a\;b;c`, []string{"a;b", "c"}},    // mixed
+		{`a\;b\;c`, []string{"a;b;c"}},      // two escaped separators
+		{`a\`, []string{`a\`}},              // trailing backslash kept verbatim
+		{`a;`, []string{"a", ""}},           // trailing empty segment
+		{`;a`, []string{"", "a"}},           // leading empty segment
+		{`a=b;c=d`, []string{"a=b", "c=d"}}, // '=' does not split
+	}
+	for _, tc := range cases {
+		got := splitSettingSegments(tc.in)
+		if len(got) != len(tc.want) {
+			t.Errorf("splitSettingSegments(%q) = %q, want %q", tc.in, got, tc.want)
+			continue
+		}
+		for i := range tc.want {
+			if got[i] != tc.want[i] {
+				t.Errorf("splitSettingSegments(%q)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
+			}
+		}
 	}
 }
 

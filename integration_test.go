@@ -2868,6 +2868,186 @@ func TestIntegration_DsnSettings(t *testing.T) {
 			t.Fatal("expected parse-time rejection of unknown setting")
 		}
 	})
+
+	t.Run("bare setting rejected as URL format error", func(t *testing.T) {
+		// H2's client rejects ";" settings without '=' (90046); accepting them
+		// would forward an empty value and silently defeat the setting.
+		_, err := ParseDSN(env["JDBC_URL"] + ";IFEXISTS")
+		if err == nil {
+			t.Fatal("expected format error for bare setting")
+		}
+	})
+
+	t.Run("forbid creation on missing database fails", func(t *testing.T) {
+		db, err := open("forbid_"+uuid.NewString()[:8],
+			map[string]string{"FORBID_CREATION": "TRUE"})
+		if err != nil {
+			t.Fatalf("OpenDB should succeed lazily: %v", err)
+		}
+		defer db.Close()
+		var v int
+		err = db.QueryRowContext(ctx, "SELECT 1").Scan(&v)
+		if err == nil {
+			t.Fatal("expected failure for missing database with FORBID_CREATION=TRUE")
+		}
+		// H2 90149 = DATABASE_NOT_FOUND_2 ("either pre-create it or allow
+		// remote database creation").
+		if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "90149") {
+			t.Errorf("error %q should indicate a missing (forbidden-to-create) database", err)
+		}
+	})
+
+	t.Run("mode oracle changes semantics", func(t *testing.T) {
+		// In Oracle compatibility mode H2 treats NULL as an empty string for
+		// concatenation: 'a' || NULL -> 'a' (default mode -> NULL).
+		// MODE is database-wide in H2 2.x while the database is open, so each
+		// probe runs against its own dedicated database to avoid contaminating
+		// the shared test database (or other subtests).
+		oracleName := "modeorc_" + uuid.NewString()[:8]
+		regularName := "modereg_" + uuid.NewString()[:8]
+
+		oracle, err := open(oracleName, map[string]string{"MODE": "Oracle"})
+		if err != nil {
+			t.Fatalf("open oracle-mode: %v", err)
+		}
+		defer oracle.Close()
+		var got string
+		if err := oracle.QueryRowContext(ctx, "SELECT 'a' || NULL").Scan(&got); err != nil {
+			t.Fatalf("oracle-mode query: %v", err)
+		}
+		if got != "a" {
+			t.Errorf("'a' || NULL in Oracle mode = %q, want \"a\"", got)
+		}
+
+		// Control: a database never opened in Oracle mode returns NULL for the
+		// same expression.
+		def, err := open(regularName, nil)
+		if err != nil {
+			t.Fatalf("open default-mode: %v", err)
+		}
+		defer def.Close()
+		var null sql.NullString
+		if err := def.QueryRowContext(ctx, "SELECT 'a' || NULL").Scan(&null); err != nil {
+			t.Fatalf("default-mode query: %v", err)
+		}
+		if null.Valid {
+			t.Errorf("'a' || NULL in default mode = %q, want NULL", null.String)
+		}
+	})
+
+	t.Run("init runs statements after connect", func(t *testing.T) {
+		// Multi-statement INIT is expressed with H2's '\;' escaping; the
+		// driver must parse it (arraySplit semantics) and forward the
+		// unescaped value so the server runs each statement after connect.
+		table := "INIT_PROBE_" + strings.ToUpper(uuid.NewString()[:8])
+		init := "CREATE TABLE IF NOT EXISTS " + table + "(v INT)" +
+			"\\;INSERT INTO " + table + " SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM " + table + ")"
+		cfg, err := ParseDSN(env["JDBC_URL"] + ";INIT=" + init)
+		if err != nil {
+			t.Fatalf("ParseDSN with escaped INIT: %v", err)
+		}
+		MergeCredentials(cfg, env["JDBC_USER"], env["JDBC_PASSWORD"])
+		db, err := OpenDB(cfg)
+		if err != nil {
+			t.Fatalf("OpenDB: %v", err)
+		}
+		defer db.Close()
+		t.Cleanup(func() {
+			// The pool above is closed by then, so drop via a fresh handle.
+			cleanup, err := open(baseCfg.Database, nil)
+			if err == nil {
+				_, _ = cleanup.ExecContext(context.Background(), "DROP TABLE IF EXISTS "+table)
+				cleanup.Close()
+			}
+		})
+		db.SetMaxOpenConns(1)
+
+		var tables int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ?",
+			table).Scan(&tables); err != nil {
+			t.Fatalf("information_schema query: %v", err)
+		}
+		if tables != 1 {
+			t.Fatalf("INIT table %s not created (found %d tables)", table, tables)
+		}
+		var v int
+		if err := db.QueryRowContext(ctx, "SELECT v FROM "+table).Scan(&v); err != nil {
+			t.Fatalf("INIT INSERT not visible: %v", err)
+		}
+		if v != 1 {
+			t.Errorf("INIT INSERT value = %d, want 1", v)
+		}
+	})
+
+	t.Run("lock timeout expires on contended row", func(t *testing.T) {
+		dbName := "locktmo_" + uuid.NewString()[:8]
+		setup, err := open(dbName, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := setup.ExecContext(ctx,
+			"CREATE TABLE lock_probe(id INT PRIMARY KEY, v INT)"); err != nil {
+			t.Fatalf("setup create: %v", err)
+		}
+		if _, err := setup.ExecContext(ctx,
+			"INSERT INTO lock_probe VALUES (1, 0)"); err != nil {
+			t.Fatalf("setup insert: %v", err)
+		}
+		setup.Close()
+		t.Cleanup(func() {
+			db, err := open(dbName, nil)
+			if err == nil {
+				_, _ = db.ExecContext(context.Background(), "DROP TABLE IF EXISTS lock_probe")
+				db.Close()
+			}
+		})
+
+		// Holder: an open transaction with a row write keeps the row locked.
+		holder, err := open(dbName, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer holder.Close()
+		holder.SetMaxOpenConns(1)
+		hc, err := holder.Conn(ctx)
+		if err != nil {
+			t.Fatalf("holder db.Conn: %v", err)
+		}
+		defer func() { _, _ = hc.ExecContext(context.Background(), "ROLLBACK"); hc.Close() }()
+		if _, err := hc.ExecContext(ctx, "BEGIN"); err != nil {
+			t.Fatalf("holder BEGIN: %v", err)
+		}
+		if _, err := hc.ExecContext(ctx, "UPDATE lock_probe SET v=99 WHERE id=1"); err != nil {
+			t.Fatalf("holder UPDATE: %v", err)
+		}
+
+		// Contender: same row with a 300ms lock budget; must fail fast with a
+		// lock-timeout error instead of blocking on the default budget.
+		contender, err := open(dbName, map[string]string{"LOCK_TIMEOUT": "300"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer contender.Close()
+		contender.SetMaxOpenConns(1)
+		start := time.Now()
+		_, err = contender.ExecContext(ctx, "UPDATE lock_probe SET v=1 WHERE id=1")
+		elapsed := time.Since(start)
+		if err == nil {
+			t.Fatal("contender update unexpectedly succeeded on a locked row")
+		}
+		lower := strings.ToLower(err.Error())
+		if !strings.Contains(err.Error(), "50200") && !strings.Contains(lower, "lock") {
+			t.Errorf("error %q should be a lock timeout", err)
+		}
+		// 300ms budget plus driver/server overhead; be generous to avoid
+		// flakes on shared CI runners, but a default-budget block (~1.5s+)
+		// must not be what we observed.
+		if elapsed > 10*time.Second {
+			t.Errorf("lock timeout took %v, expected ~300ms", elapsed)
+		}
+		t.Logf("contender rejected as expected: %v (%v)", err, elapsed)
+	})
 }
 
 // TestIntegration_QueryTimeout verifies Tier B query-timeout parity: a

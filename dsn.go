@@ -231,9 +231,12 @@ func parseJDBC(input string) (*Config, error) {
 		cfg.Port = u.Port()
 	}
 
-	// Split path on ';' to separate database name from JDBC parameters.
+	// Split path on unescaped ';' to separate database name from JDBC
+	// parameters. H2's own client uses StringUtils.arraySplit(s, ';', false),
+	// so a backslash escapes the next character and "\;" is a literal
+	// semicolon inside a value (how multi-statement INIT=... is expressed).
 	rawPath := u.Path
-	parts := strings.Split(rawPath, ";")
+	parts := splitSettingSegments(rawPath)
 
 	// First segment is the database name. Strip a leading "/" as required
 	// by the database-name rule (PRD §7.2).
@@ -241,14 +244,18 @@ func parseJDBC(input string) (*Config, error) {
 	cfg.Database = db
 
 	// Remaining segments are semicolon-separated key=value parameters.
+	// Empty segments (e.g. a trailing ';') are skipped, as in H2.
 	for i := 1; i < len(parts); i++ {
 		p := parts[i]
+		if p == "" {
+			continue
+		}
 		idx := strings.Index(p, "=")
 		if idx < 0 {
-			if err := setParam(cfg.Params, p, ""); err != nil {
-				return nil, err
-			}
-			continue
+			// H2 rejects bare settings with URL format error 90046; accepting
+			// them would silently forward an empty value (e.g. "IFEXISTS"
+			// parses as FALSE) and defeat the setting's purpose.
+			return nil, fmt.Errorf("invalid DSN setting %q: expected key=value form (H2 rejects bare settings with URL format error 90046)", p)
 		}
 		key := p[:idx]
 		val := p[idx+1:]
@@ -263,6 +270,34 @@ func parseJDBC(input string) (*Config, error) {
 	}
 
 	return validate(cfg)
+}
+
+// splitSettingSegments splits s on ';' honoring H2's backslash escaping
+// (reference: org.h2.util.StringUtils.arraySplit(s, ';', false)): a backslash
+// before any character appends that character literally, so "\;" embeds a
+// semicolon in a value instead of separating settings. A trailing backslash
+// is kept verbatim.
+func splitSettingSegments(s string) []string {
+	if s == "" {
+		return []string{""}
+	}
+	var segs []string
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\' && i < len(s)-1:
+			i++
+			b.WriteByte(s[i])
+		case c == ';':
+			segs = append(segs, b.String())
+			b.Reset()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	segs = append(segs, b.String())
+	return segs
 }
 
 func parseNative(input string) (*Config, error) {

@@ -58,9 +58,14 @@ The following commands were used to confirm the acceptance matrix and the implem
 These behaviors are deliberate and documented; they are listed here so the
 docs and code stay in sync:
 
-- DSN parameters other than `USER`/`PASSWORD` are parsed into `Config.Params`
-  but not applied (`IFEXISTS=TRUE` does not prevent auto-create, etc.); each
-  connection logs the ignored keys at debug level.
+- DSN settings follow the README parameter policy: `USER`/`PASSWORD` are
+  consumed; server-enforced settings (`IFEXISTS`, `ACCESS_MODE_DATA`, `INIT`,
+  `MODE`, `LOCK_TIMEOUT`, `FORBID_CREATION`) are forwarded in the handshake
+  property map and enforced by the server; `QUERY_TIMEOUT` is applied by the
+  driver after connect; embedded/JDBC-client-only settings are accepted but
+  have no effect (each connection logs the ignored keys at debug level); and
+  unknown settings are rejected at parse time unless the DSN carries
+  `IGNORE_UNKNOWN_SETTINGS=TRUE`.
 - Generated-keys configuration is connection-level: the mode applies to every
   update on connections created from that Config; turning keys off requires
   `GeneratedKeysModeSet = true` because `GeneratedKeysNone == 0`.

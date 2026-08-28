@@ -177,6 +177,12 @@ Notes:
 
 - Duplicate settings that differ only in case must carry identical values,
   otherwise parsing fails (H2's `DUPLICATE_PROPERTY` behavior).
+- A setting without `=` (e.g. `;IFEXISTS`) is rejected (H2's URL format
+  error 90046); write `IFEXISTS=TRUE` explicitly.
+- A backslash escapes the next character in a value, so embed a literal
+  semicolon as `\;` exactly like H2 JDBC (`arraySplit` semantics). Use it for
+  multi-statement `INIT`, e.g.
+  `jdbc:h2:tcp://localhost:9092/db;INIT=CREATE TABLE IF NOT EXISTS t(v INT)\;INSERT INTO t VALUES(1)`.
 - `INIT=...` runs server-side SQL right after connect — treat it like any
   credential-bearing setting.
 - With `Config.Logger` at debug level each connection logs which keys were
