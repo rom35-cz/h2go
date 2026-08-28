@@ -2,6 +2,30 @@
 
 All notable changes to `h2go` will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Wire-decoder fuzz targets (`FuzzReadValue`, `FuzzReadTypeInfo`,
+  `FuzzReadResultMeta`, `FuzzReadPrimitives`) asserting the protocol codec
+  handles hostile/broken streams without panicking, hanging, or allocating
+  unbounded memory. Seed corpora run as ordinary tests; `make fuzz` runs a
+  60s session per target.
+
+### Fixed
+
+- `skipExtTypeInfo` no longer silently discards GEOMETRY extended-info read
+  errors (type-id/SRID fields) — a truncated frame now fails decodes at the
+  cause instead of leaving the stream misaligned.
+
+### Changed
+
+- CI actions bumped to Node-24 majors: `actions/checkout` v7,
+  `actions/setup-go` v7, `actions/setup-java` v6, `actions/upload-artifact`
+  v7 (removes Node-20 deprecation warnings).
+- `make lint` now fails loudly when `golangci-lint` is not installed instead
+  of silently skipping.
+
 ## [v0.4.0] - 2026-08-28
 
 ### Changed

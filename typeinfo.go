@@ -316,14 +316,22 @@ func skipExtTypeInfo(tr *Tr, valueType int) error {
 			// No extended info
 		case 1:
 			// Has type only
-			_, _ = tr.ReadInt16()
+			if _, err := tr.ReadInt16(); err != nil {
+				return fmt.Errorf("h2go: skipExtTypeInfo: failed to read GEOMETRY type id: %w", err)
+			}
 		case 2:
 			// Has SRID only
-			_, _ = tr.ReadInt32()
+			if _, err := tr.ReadInt32(); err != nil {
+				return fmt.Errorf("h2go: skipExtTypeInfo: failed to read GEOMETRY SRID: %w", err)
+			}
 		case 3:
 			// Has type and SRID
-			_, _ = tr.ReadInt16()
-			_, _ = tr.ReadInt32()
+			if _, err := tr.ReadInt16(); err != nil {
+				return fmt.Errorf("h2go: skipExtTypeInfo: failed to read GEOMETRY type id: %w", err)
+			}
+			if _, err := tr.ReadInt32(); err != nil {
+				return fmt.Errorf("h2go: skipExtTypeInfo: failed to read GEOMETRY SRID: %w", err)
+			}
 		}
 
 	case ValueTypeRow:

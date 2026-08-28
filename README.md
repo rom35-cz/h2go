@@ -329,6 +329,17 @@ Notes on column metadata:
 
 [github.com/rom35-cz/h2go](https://github.com/rom35-cz/h2go)
 
+## Development
+
+- `make build`, `make vet`, `make lint` (needs `golangci-lint`), `make test`,
+  `make test-race`, and `make test-integration` (needs the local H2 server,
+  see above).
+- `make fuzz` runs the wire-decoder fuzz targets (`FuzzReadValue`,
+  `FuzzReadTypeInfo`, `FuzzReadResultMeta`, `FuzzReadPrimitives`) for 60s
+  each. They treat arbitrary bytes as a hostile server stream and fail on any
+  panic, hang, or unbounded allocation in the protocol codec. Seed corpora
+  also run as ordinary tests during `go test ./...`.
+
 ## Requirements
 
 - Go 1.22 or later (module `github.com/rom35-cz/h2go`, package `h2go`, no

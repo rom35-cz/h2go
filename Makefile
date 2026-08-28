@@ -1,4 +1,4 @@
-.PHONY: build vet lint fmt fmt-check test test-race test-integration test-integration-race bench bench-integration soak db-seed db-tls clean
+.PHONY: build vet lint fmt fmt-check test test-race test-integration test-integration-race bench bench-integration soak db-seed db-tls clean fuzz
 
 build:
 	go build ./...
@@ -6,14 +6,24 @@ build:
 vet:
 	go vet ./...
 
-# Requires golangci-lint (https://golangci-lint.run); silently skipped when
-# the binary is not on PATH. Run with --build-tags integration for full cover.
+# Requires golangci-lint (https://golangci-lint.run); fails loudly when the
+# binary is not on PATH so CI hygiene gaps are visible. Run with
+# --build-tags integration for full cover.
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 		golangci-lint run ./...; \
 	else \
-		echo "golangci-lint not installed; skipping lint"; \
+		echo "golangci-lint not installed; install with 'go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest'" >&2; \
+		exit 1; \
 	fi
+
+## fuzz: run the wire-decoder fuzz targets (60s each) to shake out
+## hostile-input crashes in the protocol codec.
+fuzz:
+	go test -fuzz=FuzzReadValue -fuzztime=60s -run '^$$' .
+	go test -fuzz=FuzzReadTypeInfo -fuzztime=60s -run '^$$' .
+	go test -fuzz=FuzzReadResultMeta -fuzztime=60s -run '^$$' .
+	go test -fuzz=FuzzReadPrimitives -fuzztime=60s -run '^$$' .
 
 # fmt-check fails when any tracked Go file is not gofmt-formatted; fmt rewrites
 # in place.
