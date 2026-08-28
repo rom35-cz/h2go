@@ -2,7 +2,7 @@
 
 All notable changes to `h2go` will be documented in this file.
 
-## [Unreleased]
+## [v0.4.0] - 2026-08-28
 
 ### Changed
 
@@ -36,6 +36,17 @@ All notable changes to `h2go` will be documented in this file.
   error (`DUPLICATE_PROPERTY` semantics); identical repeats collapse.
 - CI runs the live-H2 integration matrix against both H2 2.4.240 and the
   latest Maven release, substantiating the "2.4.240 and later" claim.
+- Query-timeout parity: the `QUERY_TIMEOUT` DSN setting (milliseconds) is
+  applied as `SET QUERY_TIMEOUT` on the session after connect, like H2's own
+  JDBC client. Over-long statements are canceled server-side (57014) while
+  the session remains usable.
+- Fault-injection suite against real spawned H2 server processes: kill -9
+  mid-query, kill during result streaming, graceful restart recovery with
+  persistence checks (`fault_test.go`).
+- Bounded soak test with leak guards on goroutines, heap and file
+  descriptors across mixed pool churn including deep-canceled queries
+  (`soak_test.go`; `make soak`, duration via `H2GO_SOAK_SECONDS`). CI runs a
+  25-second soak on every push.
 - README production notes: error handling and reconnection semantics.
 
 ## [v0.3.1] - 2026-08-23
@@ -50,17 +61,6 @@ All notable changes to `h2go` will be documented in this file.
 
 ### Added
 
-- Query-timeout parity: the `QUERY_TIMEOUT` DSN setting (milliseconds) is
-  applied as `SET QUERY_TIMEOUT` on the session after connect, like H2's own
-  JDBC client. Over-long statements are canceled server-side (57014) while
-  the session remains usable.
-- Fault-injection suite against real spawned H2 server processes: kill -9
-  mid-query, kill during result streaming, graceful restart recovery with
-  persistence checks (`fault_test.go`).
-- Bounded soak test with leak guards on goroutines, heap and file
-  descriptors across mixed pool churn including deep-canceled queries
-  (`soak_test.go`; `make soak`, duration via `H2GO_SOAK_SECONDS`). CI runs a
-  25-second soak on every push.
 - MIT LICENSE, CONTRIBUTING.md and SECURITY.md — the module is now
   packaged for public consumption as a `database/sql` driver.
 - Benchmarks: server-free microbenchmarks for the wire codec, DSN parsing,
